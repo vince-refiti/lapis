@@ -190,14 +190,47 @@ describe "lapis.db.model", ->
 
     class Things extends Model
 
-
     pager = Things\paginated "where color = ?", "blue", per_page: 99
     pager\total_items!
     pager\get_page 3
 
+    -- without opts
+    pager2 = Things\paginated "where number = ?", 100
+    pager2\get_page 2
+
     assert_queries {
       [[SELECT COUNT(*) AS c FROM "things" where color = 'blue']]
       [[SELECT * from "things" where color = 'blue' LIMIT 99 OFFSET 198]]
+      [[SELECT * from "things" where number = 100 LIMIT 10 OFFSET 10]]
+    }
+
+
+  it "creates ordered paginator", ->
+    class Things extends Model
+
+    pager = Things\paginated "where color = ?", "blue", {
+      per_page: 99
+      ordered: "id"
+    }
+
+    import OrderedPaginator from require "lapis.db.pagination"
+
+    assert.same OrderedPaginator, pager.__class
+
+    -- without opts
+    pager2 = Things\paginated "where not deleted", {
+      ordered: {"created_at", "id"}
+      per_page: 55
+    }
+
+    assert.same OrderedPaginator, pager2.__class
+
+    pager\get_page 100
+    pager2\get_page "2020-6-8", 202
+
+    assert_queries {
+      [[SELECT * from "things" where "things"."id" > 100 and (color = 'blue') order by "things"."id" ASC limit 99]]
+      [[SELECT * from "things" where ("things"."created_at", "things"."id") > ('2020-6-8', 202) and (not deleted) order by "things"."created_at" ASC, "things"."id" ASC limit 55]]
     }
 
 
@@ -253,7 +286,7 @@ describe "lapis.db.model", ->
       {
         [[INSERT INTO "timed_things" ("color", "created_at", "updated_at") VALUES ('blue', '2013-08-13 06:56:40', '2013-08-13 06:56:40') RETURNING "id", "height"]]
         [[INSERT INTO "timed_things" ("created_at", "color", "updated_at") VALUES ('2013-08-13 06:56:40', 'blue', '2013-08-13 06:56:40') RETURNING "id", "height"]]
-        [[INSERT INTO "timed_things" ("created_at", "updated_at", "color" ) VALUES ('2013-08-13 06:56:40', '2013-08-13 06:56:40', 'blue') RETURNING "id", "height"]]
+        [[INSERT INTO "timed_things" ("created_at", "updated_at", "color") VALUES ('2013-08-13 06:56:40', '2013-08-13 06:56:40', 'blue') RETURNING "id", "height"]]
 
         [[INSERT INTO "timed_things" ("color", "updated_at", "created_at") VALUES ('blue', '2013-08-13 06:56:40', '2013-08-13 06:56:40') RETURNING "id", "height"]]
         [[INSERT INTO "timed_things" ("updated_at", "color", "created_at") VALUES ('2013-08-13 06:56:40', 'blue', '2013-08-13 06:56:40') RETURNING "id", "height"]]
@@ -323,8 +356,14 @@ describe "lapis.db.model", ->
     assert.same { a: "hello", b: false }, instance
 
     assert_queries {
-      [[SELECT * from "things" where "a" = 'hello' AND "b" = FALSE]]
-      [[SELECT "hello" from "things" where "a" = 'hello' AND "b" = FALSE]]
+      {
+        [[SELECT * from "things" where "a" = 'hello' AND "b" = FALSE]]
+        [[SELECT * from "things" where "b" = FALSE AND "a" = 'hello']]
+      }
+      {
+        [[SELECT "hello" from "things" where "a" = 'hello' AND "b" = FALSE]]
+        [[SELECT "hello" from "things" where "b" = FALSE AND "a" = 'hello']]
+      }
     }
 
   it "should update model", ->
@@ -365,8 +404,14 @@ describe "lapis.db.model", ->
         [[UPDATE "timed_things" SET "updated_at" = '2013-08-13 06:56:40', "great" = TRUE WHERE "b" = 3 AND "a" = 2]]
         [[UPDATE "timed_things" SET "great" = TRUE, "updated_at" = '2013-08-13 06:56:40' WHERE "b" = 3 AND "a" = 2]]
       }
-      [[UPDATE "timed_things" SET "hello" = 'world' WHERE "a" = 2 AND "b" = 3]]
-      [[UPDATE "timed_things" SET "cat" = 'dog' WHERE "a" = 2 AND "b" = 3]]
+      {
+        [[UPDATE "timed_things" SET "hello" = 'world' WHERE "a" = 2 AND "b" = 3]]
+        [[UPDATE "timed_things" SET "hello" = 'world' WHERE "b" = 3 AND "a" = 2]]
+      }
+      {
+        [[UPDATE "timed_things" SET "cat" = 'dog' WHERE "a" = 2 AND "b" = 3]]
+        [[UPDATE "timed_things" SET "cat" = 'dog' WHERE "b" = 3 AND "a" = 2]]
+      }
     }
 
   it "should delete model", ->
@@ -524,7 +569,7 @@ describe "lapis.db.model", ->
       }
 
       assert_queries {
-        [[SELECT yeah, count(*) from "thing_items" where "thing_id" in (16, 18, 20, 22, 24) and "deleted" = FALSE order by color desc group by yeah]]
+        [[SELECT yeah, count(*) from "thing_items" where "thing_id" in (16, 18, 20, 22, 24) and "deleted" = FALSE group by yeah order by color desc]]
       }
 
     it "applies value function", ->
@@ -648,7 +693,10 @@ describe "lapis.db.model", ->
       }
 
       assert_queries {
-        [[SELECT * from "thing_items" where ("aid", "bid") in ((100, 201), (101, 202), (101, 203), (102, 204), (102, 205))]]
+        {
+          [[SELECT * from "thing_items" where ("aid", "bid") in ((100, 201), (101, 202), (101, 203), (102, 204), (102, 205))]]
+          [[SELECT * from "thing_items" where ("bid", "aid") in ((201, 100), (202, 101), (203, 101), (204, 102), (205, 102))]]
+        }
       }
 
       assert.same thing_items[4], things[1].thing_item
@@ -672,7 +720,10 @@ describe "lapis.db.model", ->
       }, many: true
 
       assert_queries {
-        [[SELECT * from "thing_items" where ("aid", "bid") in ((100, 201), (101, 202), (101, 203), (102, 204), (102, 205))]]
+        {
+          [[SELECT * from "thing_items" where ("aid", "bid") in ((100, 201), (101, 202), (101, 203), (102, 204), (102, 205))]]
+          [[SELECT * from "thing_items" where ("bid", "aid") in ((201, 100), (202, 101), (203, 101), (204, 102), (205, 102))]]
+        }
       }
 
       assert.same {}, things[1].thing_items

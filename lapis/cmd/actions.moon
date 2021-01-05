@@ -1,9 +1,10 @@
 
-import default_environment, columnize,
-  parse_flags, write_file_safe from require "lapis.cmd.util"
-
+import columnize, parse_flags, write_file_safe from require "lapis.cmd.util"
+import default_environment from require "lapis.environment"
 
 colors = require "ansicolors"
+
+unpack = unpack or table.unpack
 
 class Actions
   defalt_action: "help"
@@ -16,8 +17,13 @@ class Actions
     colors "%{bright red}Error:%{reset} #{msg}"
 
   fail_with_message: (msg) =>
-    print colors "%{bright}%{red}Aborting:%{reset} " .. msg
-    os.exit 1
+    import running_in_test from require "lapis.spec"
+
+    if running_in_test!
+      error "Aborting: #{msg}"
+    else
+      print colors "%{bright}%{red}Aborting:%{reset} " .. msg
+      os.exit 1
 
   write_file_safe: (file, content) =>
     colors = require "ansicolors"
@@ -45,6 +51,8 @@ class Actions
       return
 
     fn = assert(action[1], "action `#{action_name}' not implemented")
+    -- TODO: this should be aware of the environment from the args otherwise it
+    -- will use default environemnt and could read incorrect server
     assert @check_context action.context
     fn @, flags, unpack rest
 
@@ -54,7 +62,9 @@ class Actions
     for v in *args
       trace = true if v == "--trace"
 
-    if trace
+    import running_in_test from require "lapis.spec"
+
+    if trace or running_in_test!
       return @execute args
 
     xpcall(
@@ -65,19 +75,18 @@ class Actions
         print msg
         print " * Run with --trace to see traceback"
         print " * Report issues to https://github.com/leafo/lapis/issues"
-
         os.exit 1
     )
 
-  get_server_type: =>
-    config = require("lapis.config").get!
-    config.server
+  get_server_type: (environment) =>
+    config = require("lapis.config").get environment
+    (assert config.server, "failed to get server type from config (did you set `server`?)")
 
-  get_server_module: =>
-    require "lapis.cmd.#{@get_server_type!}"
+  get_server_module: (environment) =>
+    require "lapis.cmd.#{@get_server_type environment}"
 
-  get_server_actions: =>
-    require "lapis.cmd.#{@get_server_type!}.actions"
+  get_server_actions: (environment) =>
+    require "lapis.cmd.#{@get_server_type environment}.actions"
 
   check_context: (contexts) =>
     return true unless contexts
@@ -139,7 +148,7 @@ class Actions
       help: "build config and start server"
 
       (flags, environment=default_environment!) =>
-        @get_server_actions!.server @, flags, environment
+        @get_server_actions(environment).server @, flags, environment
     }
 
     {
@@ -206,7 +215,7 @@ class Actions
 
     {
       name: "exec"
-      usage: "exec <lua-string>"
+      usage: "exec <lua-string> [environment]"
       help: "execute Lua on the server"
       context: { "nginx" }
 

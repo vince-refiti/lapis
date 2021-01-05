@@ -24,7 +24,6 @@ dependencies = {
 	"luaossl",
 	"luafilesystem",
 	"luasocket",
-	"mimetypes",
 	"pgmoon",
 }
 
@@ -102,6 +101,7 @@ build = {
 		["lapis.time"] = "lapis/time.lua",
 		["lapis.util"] = "lapis/util.lua",
 		["lapis.util.encoding"] = "lapis/util/encoding.lua",
+		["lapis.util.fenv"] = "lapis/util/fenv.lua",
 		["lapis.util.functions"] = "lapis/util/functions.lua",
 		["lapis.validate"] = "lapis/validate.lua",
 		["lapis.version"] = "lapis/version.lua",

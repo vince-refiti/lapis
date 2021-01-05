@@ -166,6 +166,9 @@ belongs_to = (name, opts) =>
   get_method = opts.as or "get_#{name}"
   column_name = opts.key or "#{name}_id"
 
+  assert type(column_name) == "string",
+    "`belongs_to` relation doesn't support composite key, use `has_one` instead"
+
   @__base[get_method] = =>
     return nil unless @[column_name]
     existing = @[name]
@@ -190,9 +193,12 @@ belongs_to = (name, opts) =>
 
 has_one = (name, opts) =>
   source = opts.has_one
+  model_name = @__name
   assert type(source) == "string", "Expecting model name for `has_one` relation"
 
   get_method = opts.as or "get_#{name}"
+
+  -- assert opts.local_key, "`has_one` relation `local_key` option deprecated for composite `key`"
 
   @__base[get_method] = =>
     existing = @[name]
@@ -206,10 +212,9 @@ has_one = (name, opts) =>
 
     model = assert_model @@, source
 
-    foreign_key = opts.key or "#{@@singular_name!}_id"
-    clause = if type(foreign_key) == "table"
+    clause = if type(opts.key) == "table"
       out = {}
-      for k,v in pairs foreign_key
+      for k,v in pairs opts.key
         key, local_key = if type(k) == "number"
           v, v
         else
@@ -219,8 +224,13 @@ has_one = (name, opts) =>
 
       out
     else
+      local_key = opts.local_key
+      unless local_key
+        local_key, extra_key = @@primary_keys!
+        assert extra_key == nil, "Model #{model_name} has composite primary keys, you must specify column mapping directly with `key`"
+
       {
-        [foreign_key]: @[opts.local_key or @@primary_keys!]
+        [opts.key or "#{@@singular_name!}_id"]: @[local_key]
       }
 
     if where = opts.where
@@ -233,23 +243,26 @@ has_one = (name, opts) =>
   @relation_preloaders[name] = (objects, preload_opts) =>
     model = assert_model @@, source
 
-    foreign_key = opts.key or "#{@@singular_name!}_id"
-    composite_key = type(foreign_key) == "table"
 
-    local_key = unless composite_key
-      opts.local_key or @@primary_keys!
+    key = if type(opts.key) == "table"
+      opts.key
+    else
+      local_key = opts.local_key
+      unless local_key
+        local_key, extra_key = @@primary_keys!
+        assert extra_key == nil, "Model #{model_name} has composite primary keys, you must specify column mapping directly with `key`"
+
+      {
+        [opts.key or "#{@@singular_name!}_id"]: local_key
+      }
 
     preload_opts or= {}
-
-    unless composite_key
-      preload_opts.flip = true
 
     preload_opts.for_relation = name
     preload_opts.as = name
     preload_opts.where or= opts.where
-    preload_opts.local_key = local_key
 
-    model\include_in objects, foreign_key, preload_opts
+    model\include_in objects, key, preload_opts
 
 has_many = (name, opts) =>
   source = opts.has_many
@@ -258,7 +271,7 @@ has_many = (name, opts) =>
   get_method = opts.as or "get_#{name}"
   get_paginated_method = "#{get_method}_paginated"
 
-  build_query = =>
+  build_query = (additional_opts) =>
     foreign_key = opts.key or "#{@@singular_name!}_id"
 
     clause = if type(foreign_key) == "table"
@@ -277,14 +290,17 @@ has_many = (name, opts) =>
         [foreign_key]: @[opts.local_key or @@primary_keys!]
       }
 
-
     if where = opts.where
       for k,v in pairs where
         clause[k] = v
 
+    if additional_opts and additional_opts.where
+      for k,v in pairs additional_opts.where
+        clause[k] = v
+
     clause = "where #{@@db.encode_clause clause}"
 
-    if order = opts.order
+    if order = additional_opts and additional_opts.order or opts.order
       clause ..= " order by #{order}"
 
     clause
@@ -307,7 +323,18 @@ has_many = (name, opts) =>
   unless opts.pager == false
     @__base[get_paginated_method] = (fetch_opts) =>
       model = assert_model @@, source
-      model\paginated build_query(@), fetch_opts
+
+      query_opts = if fetch_opts and (fetch_opts.where or fetch_opts.order)
+        -- ordered paginator can take order
+        order = unless fetch_opts.ordered
+          fetch_opts.order
+
+        {
+          where: fetch_opts.where
+          :order
+        }
+
+      model\paginated build_query(@, query_opts), fetch_opts
 
   @relation_preloaders[name] = (objects, preload_opts) =>
     model = assert_model @@, source

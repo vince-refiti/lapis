@@ -1,11 +1,12 @@
 import underscore, escape_pattern, uniquify, singularize from require "lapis.util"
 import insert, concat from table
 
-import require, type, setmetatable, rawget, assert, pairs, unpack, error, next from _G
+import require, type, setmetatable, rawget, assert, pairs, error, next from _G
+
+unpack = unpack or table.unpack
 
 cjson = require "cjson"
 
-import OffsetPaginator from require "lapis.db.pagination"
 import add_relations, mark_loaded_relations from require "lapis.db.model.relations"
 
 _all_same = (array, val) ->
@@ -290,11 +291,11 @@ class BaseModel
       if opts and opts.where and next opts.where
         query ..= " and " .. @db.encode_clause opts.where
 
-      if order = many and opts.order
-        query ..= " order by #{order}"
-
       if group = opts and opts.group
         query ..= " group by #{group}"
+
+      if order = many and opts.order
+        query ..= " order by #{order}"
 
       if res = @db.select query
         -- holds all the fetched rows indexed by the dest_key (what was searched by)
@@ -432,7 +433,23 @@ class BaseModel
       fn @, value, key, obj
 
   @paginated: (...) =>
-    OffsetPaginator @, ...
+    nargs = select "#", ...
+
+    local fetch_opts
+
+    fetch_opts = if nargs > 1
+      last_arg = select nargs, ...
+      if last_arg and type(last_arg) == "table"
+        last_arg
+
+    if fetch_opts and fetch_opts.ordered
+      import OrderedPaginator from require "lapis.db.pagination"
+      args = {...}
+      args[nargs] = {k,v for k,v in pairs fetch_opts when k != "ordered"}
+      OrderedPaginator @, fetch_opts.ordered, unpack args
+    else
+      import OffsetPaginator from require "lapis.db.pagination"
+      OffsetPaginator @, ...
 
   -- alternative to MoonScript inheritance
   @extend: (table_name, tbl={}) =>
@@ -460,9 +477,9 @@ class BaseModel
 
   url_key: => concat [@[key] for key in *{@@primary_keys!}], "-"
 
-  delete: =>
-    res = @@db.delete @@table_name!, @_primary_cond!
-    res.affected_rows and res.affected_rows > 0, res
+  delete: (...) =>
+    res = @@db.delete @@table_name!, @_primary_cond!, ...
+    (res.affected_rows or 0) > 0, res
 
   -- thing\update "col1", "col2", "col3"
   -- thing\update {

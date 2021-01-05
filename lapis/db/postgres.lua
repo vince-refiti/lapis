@@ -5,6 +5,7 @@ do
   local _obj_0 = _G
   type, tostring, pairs, select = _obj_0.type, _obj_0.tostring, _obj_0.pairs, _obj_0.select
 end
+local unpack = unpack or table.unpack
 local raw_query, raw_disconnect
 local logger
 local FALSE, NULL, TRUE, build_helpers, format_date, is_raw, raw, is_list, list, is_encodable
@@ -59,7 +60,10 @@ local BACKENDS = {
           local pg_timeout = assert(tonumber(pg_config.timeout), "timeout must be a number (ms)")
           pgmoon:settimeout(pg_timeout)
         end
-        assert(pgmoon:connect())
+        local success, connect_err = pgmoon:connect()
+        if not (success) then
+          error("postgres failed to connect: " .. tostring(connect_err))
+        end
         if ngx then
           ngx.ctx.pgmoon = pgmoon
           after_dispatch(function()
@@ -307,6 +311,9 @@ _delete = function(table, cond, ...)
   }
   if cond then
     add_cond(buff, cond, ...)
+  end
+  if type(cond) == "table" then
+    add_returning(buff, true, ...)
   end
   return raw_query(concat(buff))
 end

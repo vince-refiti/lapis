@@ -8,14 +8,13 @@ do
   local _obj_0 = table
   insert, concat = _obj_0.insert, _obj_0.concat
 end
-local require, type, setmetatable, rawget, assert, pairs, unpack, error, next
+local require, type, setmetatable, rawget, assert, pairs, error, next
 do
   local _obj_0 = _G
-  require, type, setmetatable, rawget, assert, pairs, unpack, error, next = _obj_0.require, _obj_0.type, _obj_0.setmetatable, _obj_0.rawget, _obj_0.assert, _obj_0.pairs, _obj_0.unpack, _obj_0.error, _obj_0.next
+  require, type, setmetatable, rawget, assert, pairs, error, next = _obj_0.require, _obj_0.type, _obj_0.setmetatable, _obj_0.rawget, _obj_0.assert, _obj_0.pairs, _obj_0.error, _obj_0.next
 end
+local unpack = unpack or table.unpack
 local cjson = require("cjson")
-local OffsetPaginator
-OffsetPaginator = require("lapis.db.pagination").OffsetPaginator
 local add_relations, mark_loaded_relations
 do
   local _obj_0 = require("lapis.db.model.relations")
@@ -184,9 +183,9 @@ do
         return _accum_0
       end)(), "-")
     end,
-    delete = function(self)
-      local res = self.__class.db.delete(self.__class:table_name(), self:_primary_cond())
-      return res.affected_rows and res.affected_rows > 0, res
+    delete = function(self, ...)
+      local res = self.__class.db.delete(self.__class:table_name(), self:_primary_cond(), ...)
+      return (res.affected_rows or 0) > 0, res
     end,
     update = function(self, first, ...)
       return error("subclass responsibility")
@@ -557,15 +556,15 @@ do
         query = query .. (" and " .. self.db.encode_clause(opts.where))
       end
       do
-        local order = many and opts.order
-        if order then
-          query = query .. " order by " .. tostring(order)
-        end
-      end
-      do
         local group = opts and opts.group
         if group then
           query = query .. " group by " .. tostring(group)
+        end
+      end
+      do
+        local order = many and opts.order
+        if order then
+          query = query .. " order by " .. tostring(order)
         end
       end
       do
@@ -734,7 +733,35 @@ do
     end
   end
   self.paginated = function(self, ...)
-    return OffsetPaginator(self, ...)
+    local nargs = select("#", ...)
+    local fetch_opts
+    if nargs > 1 then
+      local last_arg = select(nargs, ...)
+      if last_arg and type(last_arg) == "table" then
+        fetch_opts = last_arg
+      end
+    end
+    if fetch_opts and fetch_opts.ordered then
+      local OrderedPaginator
+      OrderedPaginator = require("lapis.db.pagination").OrderedPaginator
+      local args = {
+        ...
+      }
+      do
+        local _tbl_0 = { }
+        for k, v in pairs(fetch_opts) do
+          if k ~= "ordered" then
+            _tbl_0[k] = v
+          end
+        end
+        args[nargs] = _tbl_0
+      end
+      return OrderedPaginator(self, fetch_opts.ordered, unpack(args))
+    else
+      local OffsetPaginator
+      OffsetPaginator = require("lapis.db.pagination").OffsetPaginator
+      return OffsetPaginator(self, ...)
+    end
   end
   self.extend = function(self, table_name, tbl)
     if tbl == nil then

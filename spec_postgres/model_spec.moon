@@ -3,6 +3,8 @@ import setup_db, teardown_db from require "spec_postgres.helpers"
 
 import drop_tables, truncate_tables from require "lapis.spec.db"
 
+unpack = unpack or table.unpack
+
 db = require "lapis.db.postgres"
 import Model, enum from require "lapis.db.postgres.model"
 import types, create_table from require "lapis.db.postgres.schema"
@@ -100,6 +102,9 @@ describe "model", ->
       Posts\create {}
 
   describe "create", ->
+    before_each ->
+      Posts\create_table!
+
     it "creates a new post", ->
       post = Posts\create {
         title: "yo"
@@ -250,6 +255,51 @@ describe "model", ->
 
       post\update user_id: db.raw "(case when false then 1234 else null end)"
       assert.same nil, post.user_id
+
+  describe "delete", ->
+    before_each ->
+      Posts\create_table!
+
+    it "deletes a row", ->
+      post = Posts\create {
+        title: "hello world"
+        body: "the body"
+
+      }
+
+      other_post = Posts\create {
+        title: "another"
+        body: "post"
+      }
+
+      assert.same {true, {affected_rows: 1}}, {post\delete!}, "post deleted"
+      assert.same {false, {affected_rows: 0}}, {post\delete!}, "nonexistant post not deleted"
+
+      assert.same 1, Posts\count!, "remaining posts"
+
+      assert.has_error(
+        -> post\refresh!
+        "posts failed to find row to refresh from, did the primary key change?"
+      )
+
+    it "deletes a post with returning", ->
+      post = Posts\create {
+        title: "hello world"
+        body: "the body"
+      }
+
+      assert.same {
+        true
+        {
+          {
+            title: "hello world"
+            body: "the body"
+          }
+          affected_rows: 1
+        }
+      }, {post\delete "title", "body"}, "post deleted with returning"
+
+      assert.same {false, {}}, {post\delete "title", "body"}, "post deleted with returning"
 
   describe "arrays", ->
     before_each ->

@@ -264,6 +264,7 @@ belongs_to = function(self, name, opts)
   assert(type(source) == "string", "Expecting model name for `belongs_to` relation")
   local get_method = opts.as or "get_" .. tostring(name)
   local column_name = opts.key or tostring(name) .. "_id"
+  assert(type(column_name) == "string", "`belongs_to` relation doesn't support composite key, use `has_one` instead")
   self.__base[get_method] = function(self)
     if not (self[column_name]) then
       return nil
@@ -298,6 +299,7 @@ end
 local has_one
 has_one = function(self, name, opts)
   local source = opts.has_one
+  local model_name = self.__name
   assert(type(source) == "string", "Expecting model name for `has_one` relation")
   local get_method = opts.as or "get_" .. tostring(name)
   self.__base[get_method] = function(self)
@@ -314,11 +316,10 @@ has_one = function(self, name, opts)
       }
     end
     local model = assert_model(self.__class, source)
-    local foreign_key = opts.key or tostring(self.__class:singular_name()) .. "_id"
     local clause
-    if type(foreign_key) == "table" then
+    if type(opts.key) == "table" then
       local out = { }
-      for k, v in pairs(foreign_key) do
+      for k, v in pairs(opts.key) do
         local key, local_key
         if type(k) == "number" then
           key, local_key = v, v
@@ -329,8 +330,14 @@ has_one = function(self, name, opts)
       end
       clause = out
     else
+      local local_key = opts.local_key
+      if not (local_key) then
+        local extra_key
+        local_key, extra_key = self.__class:primary_keys()
+        assert(extra_key == nil, "Model " .. tostring(model_name) .. " has composite primary keys, you must specify column mapping directly with `key`")
+      end
       clause = {
-        [foreign_key] = self[opts.local_key or self.__class:primary_keys()]
+        [opts.key or tostring(self.__class:singular_name()) .. "_id"] = self[local_key]
       }
     end
     do
@@ -349,21 +356,25 @@ has_one = function(self, name, opts)
   end
   self.relation_preloaders[name] = function(self, objects, preload_opts)
     local model = assert_model(self.__class, source)
-    local foreign_key = opts.key or tostring(self.__class:singular_name()) .. "_id"
-    local composite_key = type(foreign_key) == "table"
-    local local_key
-    if not (composite_key) then
-      local_key = opts.local_key or self.__class:primary_keys()
+    local key
+    if type(opts.key) == "table" then
+      key = opts.key
+    else
+      local local_key = opts.local_key
+      if not (local_key) then
+        local extra_key
+        local_key, extra_key = self.__class:primary_keys()
+        assert(extra_key == nil, "Model " .. tostring(model_name) .. " has composite primary keys, you must specify column mapping directly with `key`")
+      end
+      key = {
+        [opts.key or tostring(self.__class:singular_name()) .. "_id"] = local_key
+      }
     end
     preload_opts = preload_opts or { }
-    if not (composite_key) then
-      preload_opts.flip = true
-    end
     preload_opts.for_relation = name
     preload_opts.as = name
     preload_opts.where = preload_opts.where or opts.where
-    preload_opts.local_key = local_key
-    return model:include_in(objects, foreign_key, preload_opts)
+    return model:include_in(objects, key, preload_opts)
   end
 end
 local has_many
@@ -373,7 +384,7 @@ has_many = function(self, name, opts)
   local get_method = opts.as or "get_" .. tostring(name)
   local get_paginated_method = tostring(get_method) .. "_paginated"
   local build_query
-  build_query = function(self)
+  build_query = function(self, additional_opts)
     local foreign_key = opts.key or tostring(self.__class:singular_name()) .. "_id"
     local clause
     if type(foreign_key) == "table" then
@@ -401,9 +412,14 @@ has_many = function(self, name, opts)
         end
       end
     end
+    if additional_opts and additional_opts.where then
+      for k, v in pairs(additional_opts.where) do
+        clause[k] = v
+      end
+    end
     clause = "where " .. tostring(self.__class.db.encode_clause(clause))
     do
-      local order = opts.order
+      local order = additional_opts and additional_opts.order or opts.order
       if order then
         clause = clause .. " order by " .. tostring(order)
       end
@@ -433,7 +449,18 @@ has_many = function(self, name, opts)
   if not (opts.pager == false) then
     self.__base[get_paginated_method] = function(self, fetch_opts)
       local model = assert_model(self.__class, source)
-      return model:paginated(build_query(self), fetch_opts)
+      local query_opts
+      if fetch_opts and (fetch_opts.where or fetch_opts.order) then
+        local order
+        if not (fetch_opts.ordered) then
+          order = fetch_opts.order
+        end
+        query_opts = {
+          where = fetch_opts.where,
+          order = order
+        }
+      end
+      return model:paginated(build_query(self, query_opts), fetch_opts)
     end
   end
   self.relation_preloaders[name] = function(self, objects, preload_opts)

@@ -6,6 +6,7 @@ end
 local run_after_dispatch
 run_after_dispatch = require("lapis.nginx.context").run_after_dispatch
 local lapis_config = require("lapis.config")
+local unpack = unpack or table.unpack
 local flatten_params
 flatten_params = function(t)
   local _tbl_0 = { }
@@ -18,11 +19,11 @@ local parse_multipart
 parse_multipart = function()
   local out = { }
   local upload = require("resty.upload")
-  local input, err = upload:new(8192)
+  local input, err = upload:new(1024 * 4)
   if not (input) then
     return nil, err
   end
-  input:set_timeout(1000)
+  input:set_timeout(5000)
   local current = {
     content = { }
   }

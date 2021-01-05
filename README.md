@@ -2,9 +2,7 @@
 
 A web framework for Lua/[MoonScript][1] supporting [OpenResty](https://openresty.org/en/) or [http.server](https://github.com/daurnimator/lua-http)
 
-[![Build Status](https://travis-ci.org/leafo/lapis.svg?branch=master)](https://travis-ci.org/leafo/lapis)
-
-[![Twitch Link](http://leafo.net/dump/twitch-banner.svg)](https://www.twitch.tv/moonscript)
+![spec](https://github.com/leafo/lapis/workflows/spec/badge.svg)
 
 Lapis is production ready, use it on your next huge project.
 
@@ -25,7 +23,6 @@ We just created a Discord for Lapis users and those interested in it to communic
   * <https://streak.club> - [source](https://github.com/leafo/streak.club)
   * <https://sightreading.training> - [source](https://github.com/leafo/sightreading.training)
   * [Ludum Dare game browser](http://ludumdare.itch.io) - [source](https://github.com/leafo/ludum-dare-browser)
-  * <https://pasta.cf/> - [source](https://github.com/starius/pasta)
   * <http://lapchan.moe/> - [source](https://github.com/karai17/lapis-chan/)
 
 Made a website in Lapis? [Tell us](https://github.com/leafo/lapis/issues)
@@ -56,7 +53,7 @@ make mysql_test_db
 
 This repository contains a
 [Dockerfile](https://github.com/leafo/lapis/blob/master/Dockerfile) for running
-the entire test suite. You can it with the following commands:
+the entire test suite. You can run it with the following commands:
 
 ```bash
 docker build -t lapis-test .
@@ -69,7 +66,7 @@ should be a quick operation since dependency installation is cached.
 
 ## License (MIT)
 
-Copyright (C) 2018 by Leaf Corcoran
+Copyright (C) 2020 by Leaf Corcoran
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal

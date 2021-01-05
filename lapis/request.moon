@@ -1,4 +1,3 @@
-
 url = require "socket.url"
 
 lapis_config = require "lapis.config"
@@ -156,13 +155,18 @@ class Request
         @res\add_header "Set-Cookie", cookie
 
     add_params: (params, name) =>
-      @[name] = params
+      if name
+        @[name] = params
+
       for k,v in pairs params
         -- expand nested[param][keys]
         front = k\match "^([^%[]+)%[" if type(k) == "string"
+
         if front
           curr = @params
-          for match in k\gmatch "%[(.-)%]"
+          has_nesting = false
+          for match in k\gmatch "%[([^%]]+)%]"
+            has_nesting = true
             new = curr[front]
             if type(new) != "table"
               new = {}
@@ -170,7 +174,12 @@ class Request
 
             curr = new
             front = match
-          curr[front] = v
+
+          if has_nesting
+            curr[front] = v
+          else
+            -- couldn't parse valid nesting, just bail
+            @params[k] = v
         else
           @params[k] = v
   }

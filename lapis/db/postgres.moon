@@ -1,5 +1,6 @@
 import concat from table
 import type, tostring, pairs, select from _G
+unpack = unpack or table.unpack
 
 local raw_query, raw_disconnect
 local logger
@@ -42,6 +43,7 @@ BACKENDS = {
 
     config = require("lapis.config").get!
     pg_config = assert config.postgres, "missing postgres configuration"
+
     local pgmoon_conn
 
     _query = (str) ->
@@ -50,12 +52,14 @@ BACKENDS = {
       unless pgmoon
         import Postgres from require "pgmoon"
         pgmoon = Postgres pg_config
-        
+
         if pg_config.timeout
           pg_timeout = assert tonumber(pg_config.timeout), "timeout must be a number (ms)"
           pgmoon\settimeout pg_timeout
-        
-        assert pgmoon\connect!
+
+        success, connect_err = pgmoon\connect!
+        unless success
+          error "postgres failed to connect: #{connect_err}"
 
         if ngx
           ngx.ctx.pgmoon = pgmoon
@@ -243,6 +247,9 @@ _delete = (table, cond, ...) ->
 
   if cond
     add_cond buff, cond, ...
+
+  if type(cond) == "table"
+    add_returning buff, true, ...
 
   raw_query concat buff
 

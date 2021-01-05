@@ -73,6 +73,9 @@ class Followings extends Model
   @primary_key: { "user_id", "followed_user_id" }
 ```
 
+A unique primary key is needed for every row in order to `update` and `delete`
+rows without affecting other rows unintentially.
+
 ## Class Methods
 
 Model class methods are used for fetching existing rows, creating new ones, or
@@ -196,7 +199,7 @@ SELECT created_at as c from "tags" where tag = 'merchant'
 
 The `fields` option is inserted into the SQL statement as is, so do not use
 untrusted strings otherwise you may be vulnerable to SQL injection. Use
-[`db.escape_identifier`](database.html#query-interface-escape_identifierstr) to
+[`db.escape_identifier`](database.html#query-interface/escape_identifier) to
 escape column names.
 
 You can use the `load` option to change what model each result of the query is
@@ -242,10 +245,26 @@ SELECT * from "UserProfile" where "user_id" in (1, 2, 3, 4, 5)
 The second argument can also be a table of options. The following properties
 are supported:
 
-* `key` -- Specify the column name to find by, same effect as passing in a string as the second argument
-* `fields` -- Comma separated list of column names to fetch instead of the default `*`
-* `where` -- A table of additional `where` clauses for the query
-* `clause` -- Additional SQL to append to query either as string, or array table of arguments to be passed to `db.interpolate_query`
+$options_table{
+  {
+    name = "key",
+    description = "Specify the column name to find by, same effect as passing in a string as the second argument. The column name will be escaped with `db.escape_literal`.",
+    default = "the table's primary key"
+  },
+  {
+    name = "fields",
+    description = "A string of raw SQL inserted directly after the `SELECT` portion of the query. Use this to control what fields are returned",
+    default = "`*`"
+  },
+  {
+    name = "where",
+    description = "A table of additional `where` clauses for the query"
+  },
+  {
+    name = "clause",
+    description = "A raw SQL fragment to append to query either as string, or array table of arguments to be passed to `db.interpolate_query`"
+  }
+}
 
 For example:
 
@@ -447,37 +466,54 @@ Model:extend("user_posts"):singular_name() --> "user_post"
 (class UserPosts extends Model)\singular_name! --> "user_post"
 ```
 
-The singular name is used internally by lapis when calculating what the name of
+The singular name is used internally by Lapis when calculating what the name of
 the field is when loading rows with `include_in`. It's also used when
 determining the foreign key column name with a `has_one` or `has_many`
 relation.
 
-### `include_in(model_instances, column_name, opts={})`
+### `include_in(objects, key, opts={})`
 
-Finds instances of the current model and loads them into an array containing
-instances of another model. This is used to preload associations in a single
-query. Returns the `model_instances` array table.
+Bulk load rows of the model into an array of objects (often the array of
+objects is an array of instances of another model). This is used to preload
+associations in a single query in order to avoid the [n+1 queries
+problem](https://leafo.net/guides/postgresql-preloading.html).
 
-This is a lower level interface to preloading models. In general we recommend
-[using relations](#describing-relationships) if possible. A relation will
-internally generate a call to `include_in` based on how you have configured the
-relation.
+It works my mutating the objects in the array by inserting a new field into
+each item where the query returned a result. The name of this new field is
+either derived from the model's table name, or manually specified via an
+option.
+
+Returns the `objects` array table.
+
+This is a lower level interface for preloading data on models. In general we
+recommend [using relations](#describing-relationships) if possible. A relation
+will internally generate a call to `include_in` based on how you have
+configured the relation.
+
+The `key` argument controls the mapping from the fields in each object of the
+objects array to the column name used in the query. It can be a string, an
+array of strings, or a string*(column)* → string*(field)* table mapping. When
+using a string or array of strings then the corresponding associated key is
+automatically chosen.
+
+Possible values for `key` argument:
+
+* **string** -- for each object, the value `object[key]` is used to lookup instances of the model by the model's primary key. The model is assumed to have a singular primary key, and will error otherwise
+  * with `flip` enabled: `key` is used as the foreign key column name, and `object[opts.local_key or "id"]` is used to pull the values
+* **array of string** -- for each object, a composite key is created by individually mapping each field of the key array via `object[key]` to the composite primary key of the model
+* **column mapping table** -- explicitly specify the mapping of fields to columns. The *key* of the table will be used as the column name, and the value in the table will be used as the field name referenced from the `objects` argument
 
 `include_in` supports the following options (via the optional `opts` argument):
 
 $options_table{
   {
     name = "as",
-    description = "set the name of the property to store the associated model as",
+    description = "The name of the field the loaded associated model is stored into",
     default = "generated from table name (eg. `Posts` → `post`)"
   },
   {
-    name = "flip",
-    description = "set to `true` if the named column is located on the included model"
-  },
-  {
     name = "where",
-    description = "a table of additional conditionals to limit the query by",
+    description = "A table of additional conditionals to limit the query by",
     example = dual_code{[[
       Users\include_in posts, "user_id", {
         where: {
@@ -488,7 +524,7 @@ $options_table{
   },
   {
     name = "fields",
-    description = "the fields returned by each included model. Taken as a fragment of raw SQL. `db.escape_identifier` can be used to sanitize column names",
+    description = "Raw SQL fragment to control which columns are returned by the query. `db.escape_identifier` can be used to sanitize column names",
     example = dual_code{[[
       Users\include_in posts, "user_id", {
         fields: "id, name as display_name, created_at"
@@ -501,11 +537,7 @@ $options_table{
   },
   {
     name = "value",
-    description = "a function called for each fetched row where the return value is used in place of the row object when filling `model_instances`"
-  },
-  {
-    name = "local_key",
-    description = "only appropriate when `flip` is true. The name of the field to use when pulling primary keys from `model_instances`"
+    description = "a function called for each fetched row where the return value is used in place of the row object when filling `objects`"
   },
   {
     name = "order",
@@ -514,8 +546,47 @@ $options_table{
   {
     name = "group",
     description = "group by clause. Taken as a raw SQL clause"
+  },
+  {
+    name = "flip",
+    description = "***(deprecated)*** Flips the use of the `key` argument (when a string), to be the column name instead of the field name. `flip` can not be used with an array or table `key` argument",
+    default = "`false`"
+  },
+  {
+    name = "local_key",
+    description = "***(deprecated)*** only appropriate when `flip` is true. The name of the field to use when pulling primary keys from `objects`",
+    default = [[`"id"`]]
   }
 }
+
+> `flip` & `local_key` are deprecated and will be removed in a future version of Lapis. You
+> should opt to use the column mapping table instead of `flip` or `local_key`
+> options.
+
+<details class="aside">
+<summary>How to migrate away from `flip` and `local_key`</summary>
+
+Flip is confusing, and is deprecated and will be removed. These examples show
+replacement calls to `include_in` that do not use flip.
+
+The following are equivalent:
+
+$dual_code{[[
+UserData\include_in users, "user_id", flip: true
+UserData\include_in users, user_id: "id"
+]]}
+
+The following use `local_key` and are equivalent:
+
+$dual_code{[[
+UserData\include_in users, "user_id", flip: true, local_key: "internal_id"
+UserData\include_in users, user_id: "internal_id"
+]]}
+
+An easy way to think about the column mapping table is as a `where` clause
+table but instead of having literal values you specify the name of the field
+that is pulled from the array of objects.
+</details>
 
 In order to demonstrate `include_in` we'll need some models: (The columns are
 annotated in a comment above the model).
@@ -578,11 +649,9 @@ Users\include_in posts, "user_id", as: "author"
 Now all the posts will contain a property named `author` with an instance of
 the `Users` model.
 
-The `flip` option can be used to preload associated data where the foreign key
-is located on the rows to be loaded. (This is what lapis calls as `has_one`
-relation, the default mode loads `belongs_to` relations.)
-
-Here's an example using flip:
+In this next example a column mapping table is used to explicitly specify what
+fields in our object array match to the columns in our query. Here are the
+relevant models:
 
 ```lua
 local Model = require("lapis.db.model").Model
@@ -605,12 +674,12 @@ class Users extends Model
 class UserData extends Model
 ```
 
-Now let's say we have a collection of users and we want to fetch the associated
-user data:
+Now let's say we have an array of users and we want to fetch the associated
+user data.
 
 $dual_code{[[
 users = Users\select!
-UserData\include_in users, "user_id", flip: true
+UserData\include_in users, user_id: "id"
 
 print users[1].user_data.twitter_account
 ]]}
@@ -619,22 +688,27 @@ print users[1].user_data.twitter_account
 SELECT * from "user_data" where "user_id" in (1,2,3,4,5,6)
 ```
 
-In this example we set the `flip` option to true in the `include_in` method.
-This causes the search to happen against our foreign key, and the ids to be
-pulled from the `id` of the array of model instances.
+The second argument of `include_in`, called `key`, is a table with the value `{
+"user_id" = "id"}`. This instructs `include_in` to take all the values stored
+in the `id` field from the users array to use as values to look up rows in
+`user_data` table by the `user_id` column.
 
-Additionally, the derived property name that is injected into the model
-instances is created from the name of the included table. In the example above
-the `user_data` property contains the included model instances. (Had it been
-plural the table name would have been made singular)
+The field name that is used to store each result in the users array is derived
+from the name of the included table. In this case, `UserData` →  `user_data`.
+This can be overridden by using the `as` option.
+
+> The table name is converted to English singular form. Since user_data is both
+> singular and plural, it's used as is.
 
 One last common scenario is preloading a one-to-many relationship. You can use
-the `many` option to instruct `include_in` store many associated models for
-each input model. For example, we might load all the posts for each user:
+the `many` option to instruct `include_in` to collect all associated results
+for each input object into an array. (The derived field name will be plural)
+
+For example, we might load all the posts for each user:
 
 $dual_code{[[
 users = Users\select!
-Posts\include_in users, "user_id", flip: true, many: true
+Posts\include_in users, { user_id: "id" }, many: true
 ]]}
 
 ```sql
@@ -642,7 +716,8 @@ SELECT * from "posts" where "user_id" in (1,2,3,4,5,6)
 ```
 
 Each `users` object will now have a `posts` field that is an array containing
-all the associated posts that were found.
+all the associated posts that were found. (Note that `posts` is a plural
+derived field name when `many` is true.)
 
 ### `paginated(query, ...)`
 
@@ -716,7 +791,12 @@ $options_table{
   {
     name = "timestamp",
     default = "`true`",
-    description = "The `updated_at` field will be updated to the current time if the model has timestamps. Note that if the update itself contains `updated_at` then that will take precedence over the auto-update."
+    description = "The `updated_at` field will be updated to the current time if the model has timestamps. Note that if the update itself contains `updated_at` then that will take precedence over the auto-update.",
+    example = dual_code{[[
+      user\update {
+        views_count: db.raw "views_count + 1"
+      }, timestamp: false
+    ]]}
   }
 }
 
@@ -747,17 +827,33 @@ Consider the following code:
 
 ```lua
 local user = Users:find()
+
+-- Wrong:
 if user then
   user:delete()
   decrement_total_user_count()
+end
+
+-- Correct:
+if user then
+  if user:delete() then
+    decrement_total_user_count()
+  end
 end
 ```
 
 ```moon
 user = Users\find 1
+
+-- Wrong:
 if user
   user\delete!
   decrement_total_user_count!
+
+-- Correct:
+if user
+  if user\delete!
+    decrement_total_user_count!
 ```
 
 Due to the asynchronous nature of OpenResty, it's possible that if two requests
@@ -771,6 +867,9 @@ Updates the values of the fields on the instance from the database.
 
 If your model instance becomes out of date from an external change, use the
 `refresh` method to re-fetch and re-populate its data.
+
+If the row now longer exists in the database, then `refresh` will throw an
+error.
 
 ```moon
 class Posts extends Model
@@ -1010,54 +1109,50 @@ local paginated = Users:paginated("where group_id = ? order by name asc", 123)
 paginated = Users\paginated [[where group_id = ? order by name asc]], 123
 ```
 
-A paginator can be configured by passing a table as the last argument.
-The following options are supported:
+The type of paginator created by the `paginated` class method is an
+`OffsetPaginator`. This paginator uses `LIMIT` and `OFFSET` query clauses to
+fetch pages. There is also an `OrderedPaginator` which is described below. It
+can provide significantly increased performance for larger datasets given the
+right indexes and circumstances are met.
 
-`per_page`: sets the number of items per page
+> Always provide an `ORDER BY` clause when using a paginator or the pages
+> returned by the paginator may not be consistent.
 
-```lua
-local paginated2 = Users:paginated("where group_id = ?", 4, { per_page = 100 })
-```
+A paginator can be configured by passing a table as the last argument. The
+following options are available for all types of paginators:
 
-```moon
-paginated2 = Users\paginated [[where group_id = ?]], 4, per_page: 100
-```
+$options_table{
+  {
+    name = "per_page",
+    description = "The number of items fetched per page",
+    default = "`10`",
+    example = dual_code{[[
+      pager = Users\paginated "where group_id = ?", 4, per_page: 100
+    ]]}
+  },
+  {
+    name = "prepare_results",
+    description = [[
+      A function that is passed the results of any fetched page to prepare the objects before being retuned from methods like `get_page`, `get_all`, and `each_item`. It should return the results after they have been prepared or updated.
 
-`prepare_results`: a function that is passed the results of `get_page` and
-`get_all` for processing before they are returned. This is useful for bundling
-preloading information into the paginator. The prepare function takes 1
-argument, the results, and it must return the results after they have been
-processed:
-
-
-```lua
-local preloaded = Posts:paginated("where category = ?", "cats", {
-  per_page = 10,
-  prepare_results = function(posts)
-    Users:include_in(posts, "user_id")
-    return posts
-  end
-})
-```
-
-```moon
-preloaded = Posts\paginated [[where category = ?]], "cats", {
-  per_page: 10
-  prepare_results: (posts) ->
-    Users\include_in posts, "user_id"
-    posts
+      This is useful for preloading related data automatically when fetching results to avoid the [n+1 queries problem](https://leafo.net/guides/postgresql-preloading.html).
+    ]],
+    example = dual_code{[[
+      items = Posts\paginated "where category = ?", "big_cats", {
+        per_page: 10
+        prepare_results: (posts) ->
+          Users\include_in posts, "user_id"
+          posts
+      }
+    ]]}
+  },
+  {
+    name = "...",
+    description = "Any additional options are passed directly to the `select` class method to control the query. For example, `fields` can be used to restrict what columns are fetched"
+  }
 }
-```
 
-Any additional options sent to `paginated` are passed directly to the
-underlying `select` method call when a page is loaded. For example you can
-provide a `fields` option in order to limit the fields returned by a page.
-
-Whenever possible you should specify an `ORDER` clause in your paginated query,
-as the database might returned unexpected results for each page.
-
-The paginator has the following methods:
-
+A paginator has the following methods:
 
 ### `get_page(page_num)`
 
@@ -1065,20 +1160,18 @@ Gets `page_num`th page, where pages are 1 indexed. The number of items per page
 is controlled by the `per_page` option, and defaults to 10. Returns an array
 table of model instances.
 
-```lua
-local page1 = paginated:get_page(1)
-local page6 = paginated:get_page(6)
-```
-
-```moon
+$dual_code{[[
 page1 = paginated\get_page 1
 page6 = paginated\get_page 6
-```
+]]}
 
 ```sql
 SELECT * from "users" where group_id = 123 order by name asc limit 10 offset 0
 SELECT * from "users" where group_id = 123 order by name asc limit 10 offset 50
 ```
+
+> The OrderedPaginator fetches pages in a fundamentally different way, see
+> below for more information.
 
 ### `num_pages()`
 
@@ -1136,16 +1229,10 @@ Each item is preloaded with the `prepare_results` function if provided.
 > Iteration order can change if the table is modified during iteration, see the
 > warning on `each_page`.
 
-```lua
-for item in pager:each_item() do
-  print(item.name)
-end
-```
-
-```moon
+$dual_code{[[
 for item in pager\each_item!
   print item.name
-```
+]]}
 
 ### `has_items()`
 
@@ -1176,24 +1263,21 @@ If you have a large dataset you want to iterate over, consider using
 
 Each item is preloaded with the `prepare_results` function if provided.
 
-
-```lua
-local users = paginated:get_all()
-```
-
-```moon
+$dual_code{[[
 users = paginated\get_all!
-```
+]]}
+
 
 ```sql
 SELECT * from "users" where group_id = 123 order by name asc
 ```
 
-## Ordered paginator
+## Ordered Paginator
 
-The default paginator uses `LIMIT` and `OFFSET` to handle fetching pages. For
-large data sets, this can become inefficient for viewing later pages since the
-database has to scan past all the preceding rows when handling the offset.
+The default paginator, also know as the `OffsetPaginator`, uses `LIMIT` and
+`OFFSET` to handle fetching pages. For large data sets, this can become
+inefficient for viewing later pages since the database has to scan past all the
+preceding rows when handling the offset.
 
 An alternative way to handling pagination is using a `WHERE` clause along with
 an `ORDER` and `LIMIT`. If the right index is on the table then the database
@@ -1437,13 +1521,10 @@ class Posts extends Model
 
 A `get_` method is added to the model to fetch the associated row:
 
-```lua
-local user = post:get_user()
-```
-
-```moon
+$dual_code{[[
 user = post\get_user!
-```
+]]}
+
 
 ```sql
 SELECT * from "users" where "user_id" = 123;
@@ -1540,8 +1621,11 @@ You can call the `refresh` method to clear the relation caches.
 
 ### `has_many`
 
-A one to many relation. It defines two methods, one that returns a [`Paginator`
-object](#pagination), and one that fetches all of the objects.
+A one to many relation. It defines two methods, one that returns a [paginator
+object](#pagination), and one that fetches all of the objects. In the following
+example we create a model, Users, where each user can have many Posts
+that they own:
+
 
 ```lua
 local Model = require("lapis.db.model").Model
@@ -1553,6 +1637,66 @@ local Users = Model:extend("users", {
 })
 ```
 
+In the above example, the `Users` model will expect that the table backed by
+the `Posts` model contains a column `user_id` that will be used to find the
+associated posts for each user.
+
+
+The following options may be included to customize the relation
+
+$options_table{
+  {
+    name = "key",
+    description = [[
+      The foreign key to search on. Either a string for singular foreign key,
+      an array table to specify composite foreign keys, or a key-value table to
+      specify cross-table column mapping.
+
+      Defaults a singular foreign key by appending `_id` to the singular form of the table name, eg. `Users` → `user_id`
+    ]],
+    default = "`#{singular(table_name)}_id`"
+  },
+  {
+    name = "where",
+    description = "Set additional constraints on the things returned, as a table",
+    example = [[
+      ```lua
+      local Model = require("lapis.db.model").Model
+
+      local Users = Model:extend("users", {
+        relations = {
+          {"authored_posts",
+            has_many = "Posts",
+            where = { deleted = false }
+          }
+        }
+      })
+      ```
+
+      ```moon
+      import Model from require "lapis.db.model"
+      class Users extends Model
+        @relations: {
+          {"authored_posts"
+            has_many: "Posts"
+            where: { deleted: false }
+          }
+        }
+      ```
+    ]]
+  },
+  {
+    name = "order",
+    description = "A SQL fragment as a string used to specify a default `order by` clause when the relation is fetched"
+  },
+  {
+    name = "as",
+    description = "Override the name included in the generated methods, and the cached object",
+    default = "*relation name*"
+  }
+}
+
+
 ```moon
 import Model from require "lapis.db.model"
 class Users extends Model
@@ -1560,6 +1704,11 @@ class Users extends Model
     {"posts", has_many: "Posts"}
   }
 ```
+
+The following methods are added to the model for the `posts` relation shown above:
+
+* `get_posts()` (`get_X`) -- fetch all the objects for that relation
+* `get_posts_paginated(opts)` (`get_X_paginated`) -- return a pagination object for iterating through all the posts
 
 We can use the `get_` method to fetch all the associated records. If the
 relation has already been fetched then it will return the cached value. The
@@ -1578,38 +1727,47 @@ posts = user\get_posts!
 SELECT * from "posts" where "user_id" = 123
 ```
 
-The `has_many` relation also creates a `get_X_paginated` method for getting a
-paginator that points to the related objects. This is useful if you know the
-relation could include a large number of things and it does not make sense to
-fetch them all at once.
+The `get_X_paginated` method will return a [paginator](#pagination) for
+iterating through the related objects. This is useful if you know the relation
+could include a large number of things and it does not make sense to fetch them
+all at once.
 
-Any arguments passed to the paginated getter are passed to the paginator's
-constructor, so you can specify things like `fields`, `prepare_results`, and
-`per_page`:
+> It is highly recommended that you either specify and order in the relation,
+> or use the ordered paginator otherwise the database may return items out of
+> order when iterating over the pages of results. This could cause you see
+> duplicate items or skip items entirely.
+
+Any arguments passed to the `get_X_paginated` method are passed to the
+paginator's constructor, so you can specify things like `fields`,
+`prepare_results`, and `per_page`:
 
 
-```lua
-local posts = user:get_posts_paginated({per_page = 20}):get_page(3)
-```
-
-```moon
+$dual_code{[[
 posts = user\get_posts_paginated(per_page: 20)\get_page 3
-```
+]]}
 
 ```sql
 SELECT * from "posts" where "user_id" = 123 LIMIT 20 OFFSET 40
 ```
 
+By default, an `OffsetPaginator` (paginated with `LIMIT` and `OFFSET`) is
+created. If you want to use the [OrderedPaginator](#ordered-paginator) you can
+specify an `ordered` option to the method with a list:
 
-The `has_many` relation supports a few more options:
+$dual_code{[[
+pager = user\get_posts_paginated per_page: 20, ordered: {"id"}
 
-* `key` -- the foreign key to search on, defaults to appending `_id` to the singular form of the table name, eg. `Users` → `user_id`
-* `where` -- set additional constraints on the things returned, as a table
-* `order` -- a SQL fragment as a string used to specify `order by` clause in the queries
-* `as` -- specify the prefix of the generated methods (defaults to `get_NAME`)
+posts, next_page = pager\get_page!
+posts2 = pager\get_page next_page
+]]}
 
+```sql
+SELECT * from "posts" where "user_id" = 123 ORDER BY "posts"."id" ASC LIMIT 20
+SELECT * from "posts" where "posts".id > 23892 and ("user_id" = 123)
+  ORDER BY "posts"."id" ASC LIMIT 20
+```
 
-Here's a more complex example using some of the options:
+Here's a more complex example utilizing some of the options for `has_many`:
 
 ```lua
 local Model = require("lapis.db.model").Model
@@ -1678,22 +1836,39 @@ class Users extends Model
   }
 ```
 
+The following options control how the `fetch` relation works:
 
-`fetch` relations can use a preload function to handle loading data for many
-objects at once.
+$options_table{
+  {
+    name = "fetch",
+    description = "Callback function to fetch a result for a single model instance",
+    default = "***required***"
+  },
+  {
+    name = "preload",
+    description = "Callback function to load data for many model instances at once. Receives an argument of an array of model instances, and more. See below"
+  },
+  {
+    name = "many",
+    description = "Set this to true if your fetch relation returns a collection of models instead of a single model. This will allow the preloader to traverse arrays of objects loaded with fetch",
+    default = "`false`"
+  }
+}
 
-The preloader function receives four arguments:
+A preload function can be provided to bulk load data for many objects at once.
+It is automatically called when using any of Lapis' preload functions. The
+`preload` function receives four arguments:
 
 * an array table of model instances that should be preloaded
 * any options passed to the original call to `preload`
 * the class of the model
 * the name of the relation
 
-The preloader is responsible for setting the loaded value on each object. The
-`name` argument is the name of the field that should be filled for each
-instance.  All of the instances will be marked as having the relation loaded,
-regardless of if you set a value or not. This means that future calls to `get_`
-will return the cached value.
+The `preload` function is responsible for setting the loaded value on each
+object. The `name` argument is the name of the field that should be filled for
+each instance.  All of the instances will be marked as having the relation
+loaded, regardless of if you set a value or not. This means that future calls
+to `get_` will return the cached value.
 
 
 ```lua

@@ -42,7 +42,7 @@ pg-connect: example.com:1234 dbname=hello user=leafo password=thepass]], compile
 
   it "should read environment variable", ->
     unless pcall -> require "posix"
-      pending "lposix is required for cmd.nginx specs"
+      pending "luaposix is required for cmd.nginx specs"
       return
 
     posix = require "posix"
@@ -64,7 +64,7 @@ hello: what's up]], compiled
 
   it "should read environment variable in etlua config", ->
     unless pcall -> require "posix"
-      pending "lposix is required for cmd.nginx specs"
+      pending "luaposix is required for cmd.nginx specs"
       return
 
     posix = require "posix"
@@ -154,6 +154,11 @@ describe "lapis.cmd.actions.execute", ->
       assert_files {
         "app.moon", "mime.types", "models.moon", "nginx.conf"
       }
+
+    it "fails if files already exist", ->
+      cmd.execute { [0]: "lapis", "new" }
+      assert.has_error ->
+        cmd.execute { [0]: "lapis", "new" }
 
     it "cqueues app", ->
       cmd.execute { [0]: "lapis", "new", "--cqueues" }

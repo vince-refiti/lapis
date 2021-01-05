@@ -185,6 +185,50 @@ describe "lapis.db.model.relations", ->
       'SELECT * from "user_profiles" where "user_id" = 123 limit 1'
     }
 
+  it "fails with composite primary key on has_one", ->
+    mock_query "SELECT", { { id: 111, id2: 222 } }
+
+    models.Users = class Users extends Model
+      @primary_key: {"a_id", "b_id"}
+      @relations: {
+        {"user_profile", has_one: "UserProfiles"}
+        {"user_profile_with_key", has_one: "UserProfiles", key: {
+          id: "a_id"
+          id2: "b_id"
+        }}
+      }
+
+    models.UserProfiles = class UserProfiles extends Model
+
+    user = Users!
+    user.a_id = 111
+    user.b_id = 222
+
+    assert.has_error(
+      -> user\get_user_profile!
+      "Model UsersRelations has composite primary keys, you must specify column mapping directly with `key`"
+    )
+
+    assert.has_error(
+      -> Users\preload_relations { user }, "user_profile"
+      "Model UsersRelations has composite primary keys, you must specify column mapping directly with `key`"
+    )
+
+    user\get_user_profile_with_key!
+
+    Users\preload_relations { user }, "user_profile_with_key"
+
+    assert_queries {
+      {
+        'SELECT * from "user_profiles" where "id2" = 222 AND "id" = 111 limit 1'
+        'SELECT * from "user_profiles" where "id" = 111 AND "id2" = 222 limit 1'
+      }
+      {
+        'SELECT * from "user_profiles" where ("id2", "id") in ((222, 111))'
+        'SELECT * from "user_profiles" where ("id", "id2") in ((111, 222))'
+      }
+    }
+
   it "should make has_one getter with custom key", ->
     mock_query "SELECT", { { id: 101 } }
 
@@ -319,12 +363,19 @@ describe "lapis.db.model.relations", ->
     user = models.Users!
     user.id = 1234
 
+    -- offset paginator
     user\get_posts_paginated!\get_page 1
     user\get_posts_paginated!\get_page 2
 
     user\get_more_posts_paginated!\get_page 2
 
     user\get_posts_paginated(per_page: 44)\get_page 3
+
+    -- offset ordered paginator
+    user\get_posts_paginated(ordered: {"id"})\get_page!
+    user\get_posts_paginated(ordered: {"id"})\get_page 1023
+
+    user\get_posts_paginated(order: "desc", ordered: {"created_at", "id"})\get_page "2020-1-1", 238
 
     assert_queries {
       'SELECT * from "posts" where "user_id" = 1234 LIMIT 10 OFFSET 0'
@@ -334,6 +385,10 @@ describe "lapis.db.model.relations", ->
         [[SELECT * from "posts" where "color" = 'blue' AND "user_id" = 1234 LIMIT 10 OFFSET 10]]
       }
       'SELECT * from "posts" where "user_id" = 1234 LIMIT 44 OFFSET 88'
+      'SELECT * from "posts" where "user_id" = 1234 order by "posts"."id" ASC limit 10'
+      'SELECT * from "posts" where "posts"."id" > 1023 and ("user_id" = 1234) order by "posts"."id" ASC limit 10'
+
+      [[SELECT * from "posts" where ("posts"."created_at", "posts"."id") < ('2020-1-1', 238) and ("user_id" = 1234) order by "posts"."created_at" desc, "posts"."id" desc limit 10]]
     }
 
 

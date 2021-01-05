@@ -1,9 +1,12 @@
-local default_environment, columnize, parse_flags, write_file_safe
+local columnize, parse_flags, write_file_safe
 do
   local _obj_0 = require("lapis.cmd.util")
-  default_environment, columnize, parse_flags, write_file_safe = _obj_0.default_environment, _obj_0.columnize, _obj_0.parse_flags, _obj_0.write_file_safe
+  columnize, parse_flags, write_file_safe = _obj_0.columnize, _obj_0.parse_flags, _obj_0.write_file_safe
 end
+local default_environment
+default_environment = require("lapis.environment").default_environment
 local colors = require("ansicolors")
+local unpack = unpack or table.unpack
 local Actions
 do
   local _class_0
@@ -13,8 +16,14 @@ do
       return colors("%{bright red}Error:%{reset} " .. tostring(msg))
     end,
     fail_with_message = function(self, msg)
-      print(colors("%{bright}%{red}Aborting:%{reset} " .. msg))
-      return os.exit(1)
+      local running_in_test
+      running_in_test = require("lapis.spec").running_in_test
+      if running_in_test() then
+        return error("Aborting: " .. tostring(msg))
+      else
+        print(colors("%{bright}%{red}Aborting:%{reset} " .. msg))
+        return os.exit(1)
+      end
     end,
     write_file_safe = function(self, file, content)
       colors = require("ansicolors")
@@ -73,7 +82,9 @@ do
           trace = true
         end
       end
-      if trace then
+      local running_in_test
+      running_in_test = require("lapis.spec").running_in_test
+      if trace or running_in_test() then
         return self:execute(args)
       end
       return xpcall(function()
@@ -87,15 +98,15 @@ do
         return os.exit(1)
       end)
     end,
-    get_server_type = function(self)
-      local config = require("lapis.config").get()
-      return config.server
+    get_server_type = function(self, environment)
+      local config = require("lapis.config").get(environment)
+      return (assert(config.server, "failed to get server type from config (did you set `server`?)"))
     end,
-    get_server_module = function(self)
-      return require("lapis.cmd." .. tostring(self:get_server_type()))
+    get_server_module = function(self, environment)
+      return require("lapis.cmd." .. tostring(self:get_server_type(environment)))
     end,
-    get_server_actions = function(self)
-      return require("lapis.cmd." .. tostring(self:get_server_type()) .. ".actions")
+    get_server_actions = function(self, environment)
+      return require("lapis.cmd." .. tostring(self:get_server_type(environment)) .. ".actions")
     end,
     check_context = function(self, contexts)
       if not (contexts) then
@@ -172,7 +183,7 @@ do
           if environment == nil then
             environment = default_environment()
           end
-          return self:get_server_actions().server(self, flags, environment)
+          return self:get_server_actions(environment).server(self, flags, environment)
         end
       },
       {
@@ -253,7 +264,7 @@ do
       },
       {
         name = "exec",
-        usage = "exec <lua-string>",
+        usage = "exec <lua-string> [environment]",
         help = "execute Lua on the server",
         context = {
           "nginx"

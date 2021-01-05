@@ -3,6 +3,8 @@ require "spec.helpers" -- for one_of
 db = require "lapis.db.postgres"
 schema = require "lapis.db.postgres.schema"
 
+unpack = unpack or table.unpack
+
 value_table = { hello: "world", age: 34 }
 
 tests = {
@@ -137,6 +139,11 @@ tests = {
   }
 
   {
+    -> db.update "cats", { age: db.NULL }, { name: db.NULL }, db.raw "*"
+    [[UPDATE "cats" SET "age" = NULL WHERE "name" IS NULL RETURNING *]]
+  }
+
+  {
     -> db.delete "cats"
     [[DELETE FROM "cats"]]
   }
@@ -155,6 +162,16 @@ tests = {
     -> db.delete "cats", name: "rump", dad: "duck"
     [[DELETE FROM "cats" WHERE "name" = 'rump' AND "dad" = 'duck']]
     [[DELETE FROM "cats" WHERE "dad" = 'duck' AND "name" = 'rump']]
+  }
+
+  {
+    -> db.delete "cats", { color: "red" }, "name", "color"
+    [[DELETE FROM "cats" WHERE "color" = 'red' RETURNING "name", "color"]]
+  }
+
+  {
+    -> db.delete "cats", { color: "red" }, db.raw "*"
+    [[DELETE FROM "cats" WHERE "color" = 'red' RETURNING *]]
   }
 
   {
@@ -450,7 +467,12 @@ END]]
   }
 
   {
-    -> db.is_encodable newproxy!
+    ->
+      if _G.newproxy
+        db.is_encodable newproxy!
+      else
+        -- cjson.empty_array is a userdata
+        db.is_encodable require("cjson").empty_array
     false
   }
 

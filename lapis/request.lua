@@ -290,7 +290,9 @@ do
       end
     end,
     add_params = function(self, params, name)
-      self[name] = params
+      if name then
+        self[name] = params
+      end
       for k, v in pairs(params) do
         local front
         if type(k) == "string" then
@@ -298,7 +300,9 @@ do
         end
         if front then
           local curr = self.params
-          for match in k:gmatch("%[(.-)%]") do
+          local has_nesting = false
+          for match in k:gmatch("%[([^%]]+)%]") do
+            has_nesting = true
             local new = curr[front]
             if type(new) ~= "table" then
               new = { }
@@ -307,7 +311,11 @@ do
             curr = new
             front = match
           end
-          curr[front] = v
+          if has_nesting then
+            curr[front] = v
+          else
+            self.params[k] = v
+          end
         else
           self.params[k] = v
         end
