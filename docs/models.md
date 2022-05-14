@@ -40,7 +40,7 @@ class name of <code>HelloWorlds</code> would result in the table name
 Model instances will have a field for each column that has been fetched from
 the database. You do not need to manually specify the names of the columns.  If
 you have any relationships, though, you can specify them using the
-[`relations` property](#describing-relationships).
+[`relations` property](#relations).
 
 ## Primary Keys
 
@@ -374,11 +374,20 @@ If your model has any [constraints](#constraints) they will be checked before tr
 a new row. If a constraint fails then `nil` and the error message are returned
 from the `create` function.
 
-`create` can take an options table as a second argument. It supports the
-following options:
+`create_opts` is an optional table supporting the following fields:
 
-* `returning` -- A string containing a list of columns to fetch along with the create statement using the `RETURNING` statement
-
+$options_table{
+  {
+    name = "returning",
+    description = 'An array table of column names or the string `"*"` to represent all column names. Their values will be return from the insertion query using `RETURNING` clause to initially populate the model object',
+    default = "Automatically calculated to include any columns that have `db.raw` values, and the primary keys",
+    example = dual_code{[[
+      Users\create {
+        profile_color: "blue"
+      }, returning: "*"
+    ]]}
+  }
+}
 
 ### `columns()`
 
@@ -486,7 +495,7 @@ option.
 Returns the `objects` array table.
 
 This is a lower level interface for preloading data on models. In general we
-recommend [using relations](#describing-relationships) if possible. A relation
+recommend [using relations](#relations) if possible. A relation
 will internally generate a call to `include_in` based on how you have
 configured the relation.
 
@@ -727,63 +736,86 @@ Similar to `select` but returns a `Paginator`. Read more in [Pagination](#pagina
 
 ### `update(..., opts={})`
 
-Instances of models have the `update` method for updating the row. The values
-of the primary keys are used to uniquely identify the row for updating.
+Generate and issue a query to update the row backed by the instance of the
+model. The values of the primary keys specified by the model's class are used
+to uniquely identify the row for updating.
 
-The first form of update takes variable arguments. A list of strings that
-represent column names to be updated. The values of the columns are taken from
-the current values in the instance.
+This method returns two values:
 
-```lua
-local user = Users:find(1)
-user.login = "uberuser"
-user.email = "admin@example.com"
-user:update("login", "email")
-```
+1. `true` or `false` if the query was able to update a row successfully
+(Generally this will always return `true` unless the row has been deleted from
+the database before the update was issued, or a conditional update is being used)
+2. The result object from the `db.update` function that is called internally
 
-```moon
-user = Users\find 1
-user.login = "uberuser"
-user.email = "admin@example.com"
+> The second return value is always a table with the result object, which is
+> incompatible with `assert` when trying to throw an error if the update didn't
+> take place
 
-user\update "login", "email"
-```
 
-```sql
-UPDATE "users" SET "login" = 'uberuser', "email" = 'admin@example.com' WHERE "id" = 1
-```
+The arguments to this method come in two forms:
 
-Alternatively we can pass a table as the first argument of `update`. The keys
-of the table are the column names, and the values are the values to update the
-columns with. The instance is also updated. We can rewrite the above example as:
+1. Update table
+2. Field name list
 
-```lua
-local user = Users:find(1)
-user:update({
-  login = "uberuser",
-  email = "admin@example.com",
-})
-```
+In the first form we simply pass a table mapping column names to the updated
+values. The values in the table will be merged into the instance of the model
+to reflect the update:
 
-```moon
+$dual_code{[[
 user = Users\find 1
 user\update {
   login: "uberuser"
   email: "admin@example.com"
 }
-```
+
+-- both the database row and model instance will have the updated value:
+assert user.login == "uberuser"
+]]}
 
 ```sql
 UPDATE "users" SET "login" = 'uberuser', "email" = 'admin@example.com' WHERE "id" = 1
 ```
 
-> The table argument can also take positional values, which are treated the
-> same as the variable argument form.
 
-If any of the updated values are generated from raw SQL via `db.raw`, then
-those values will be replaced with values returning by the database using the
-`RETURNING` clause similar to the [`create` class
-method](#class-methods-createopts).
+The second form takes a list of field or column names to synchronize from the
+model instance to the database. With this approach first edit the model
+instance with updated values, then issue the `update` call to save the changes:
+
+$dual_code{[[
+user = Users\find 1
+user.login = "uberuser"
+user.email = "admin@example.com"
+
+user\update "login", "email"
+]]}
+
+```sql
+UPDATE "users" SET "login" = 'uberuser', "email" = 'admin@example.com' WHERE "id" = 1
+```
+
+> You can also pass in an array of field names via a table as the first
+> argument to the update method. The two forms can be used together with a
+> table as the first argument
+
+If any of values used for the update are SQL fragments generated by something
+like `db.raw`, then a `RETURNING` clause will be used to determine the final
+value from the database to store on the model instance, similar to the
+[`create` class method](#class-methods-createopts).
+
+
+$dual_code{[[
+user = Users\crate {
+  id: 10
+  views: 1
+}
+
+user\update {
+  views: db.raw "views + 12"
+}
+
+-- the result of the query is assigned to the model:
+assert count == 13
+]]}
 
 **Options**
 
@@ -796,6 +828,16 @@ $options_table{
       user\update {
         views_count: db.raw "views_count + 1"
       }, timestamp: false
+    ]]}
+  },
+  {
+    name = "where",
+    default = "`nil`",
+    description = "A table of additional conditions to add to the `WHERE` clause of the updated query. This can be used to have an atomic conditional update. The return value should be checked to see if the update succeeeded or not.",
+    example = dual_code{[[
+      user\update {
+        views_count: db.raw "views_count + 1"
+      }, where: { public: true }
     ]]}
   }
 }
@@ -1841,12 +1883,12 @@ The following options control how the `fetch` relation works:
 $options_table{
   {
     name = "fetch",
-    description = "Callback function to fetch a result for a single model instance",
+    description = "Callback function to fetch a result for a single model instance, or the value `true` to use the `preload` function to load a single result",
     default = "***required***"
   },
   {
     name = "preload",
-    description = "Callback function to load data for many model instances at once. Receives an argument of an array of model instances, and more. See below"
+    description = "Callback function to load data for many model instances at once. Receives an argument of an array of model instances, and more. This is only required if trying to preload multiple objects at once, or when using fetch set to `true`. See below"
   },
   {
     name = "many",
@@ -1870,6 +1912,9 @@ each instance.  All of the instances will be marked as having the relation
 loaded, regardless of if you set a value or not. This means that future calls
 to `get_` will return the cached value.
 
+To simplify writting getters, `fetch` can be set to `true` to autogenerate a
+function based on the `preload` function when getting the associated value from
+a single instance of the model.
 
 ```lua
 local Model = require("lapis.db.model").Model
@@ -1877,9 +1922,9 @@ local Model = require("lapis.db.model").Model
 local Users = Model:extend("users", {
   relations = {
     {"recent_posts",
-      fetch = function(self)
-        -- fetch some data
-      end,
+      -- we can use true here to have the singular getter automatically
+      -- generated based on the preload function
+      fetch = true,
       preload = function(objs)
         for object in pairs(objs) do
           -- provide your own preload code and store the result on the object
@@ -1896,8 +1941,9 @@ import Model from require "lapis.db.model"
 class Users extends Model
   @relations: {
     {"recent_posts"
-      fetch: =>
-        -- fetch some data
+      -- we can use true here to have the singular getter automatically
+      -- generated based on the preload function
+      fetch: true
       preload: (objs) ->
         for object in *objs
           -- provide your own preload code and store the result on the object

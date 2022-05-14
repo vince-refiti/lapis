@@ -3,20 +3,29 @@
 }
 # Testing
 
-Lapis comes with utilities for handling two types of testing.
+Lapis comes with modes of executing tests:
 
-The first type is request mocking. Mocking a request simulates a HTTP request
+**Request mocking:** Mocking a request simulates a HTTP request
 to your application, bypassing any real HTTP requests and Nginx. The advantage
 of this method is that it's faster and errors happen within the test process.
 
-The second type uses the test server. The test server is a temporary Nginx
-server spawned for the duration of your tests that allows you to issue full
-HTTP requests. The advantage is you can test both Nginx configuration and your
-application at the same time, as well as allow your application to use ngx.*
-features. It very closely resembles how your application will run in production.
+**Test Server:** A temporary Nginx server is spawned for the duration of your
+tests that allows you to issue full HTTP requests. The advantage of this method
+is you can perform full integration tests across both your Nginx configuration
+and your application code. Your application code also has full access to the
+`ngx.*` Lua API. It very closely resembles how your application will run in
+production.
+
+Both modes support using a separate database connection via the `test`
+environment for writing tests for your models.
 
 You are free to use any testing framework you like, but in these examples we'll
-be using [Busted](http://olivinelabs.com/busted/).
+be using [Busted][].
+
+> Lapis will detect when it is running in Busted and enable the test
+> environment accordingly. If you are using any other test library it is your
+> responsibility to ensure you have enabled the test environment or you may
+> risk data loss in you development database.
 
 ## Mocking a Request
 
@@ -43,8 +52,7 @@ import mock_request from require "lapis.spec.request"
 status, body, headers = mock_request(app, url, options)
 ```
 
-For example, to test a basic application with
-[Busted](http://olivinelabs.com/busted/) we could do:
+For example, to test a basic application with [Busted][] we could do:
 
 ```lua
 local lapis = require("lapis.application")
@@ -114,13 +122,17 @@ r1_status, r1_res, r1_headers = mock_request MyApp!, "/first_url"
 r2_status, r2_res = mock_request MyApp!, "/second_url", prev: r1_headers
 ```
 
-### Using a `test` Environment
+### Using the `test` Environment
 
-If you execute any queries during your tests without setting an environment
-then they will run on the current environment. The default environment is
-`development`, so this might not be ideal as it could mess up the state of your
-database for development. It's suggested to make a `test` environment for
-executing tests in with its own database connection.
+When using a supported testing tool, like [Busted][], Lapis will automatically
+detect that it is running within a test runner and change the default
+environment to one called *`test`*.
+
+The `test` environment will allow you to write a distinct configuration to be
+used when tests are running. It is highly recommended to set up a distinct
+database for your test suite to ensure that none of your working data is reset
+when running tests, as a copy pattern is to truncate all data from a table
+before running any tests that use that table.
 
 You can add a configuration environment with separate database rules by editing
 your <span class="for_moon">`config.moon`</span><span
@@ -160,51 +172,35 @@ config "test", ->
 > Don't forget to initialize your test database by creating it and its schema
 > before running the tests.
 
-When executing your tests we can use the `use_test_env` function to ensure the
-test block runs in the `test` environment. It is equivalent to adding a setup
-and teardown function that sets and restores the environment.
-
-If there is a database connection configured then this function will also
-connect to the database once before any tests are run.
-
-```lua
-local use_test_env = require("lapis.spec").use_test_env
-
-describe("my site", function()
-  use_test_env()
-
-  -- write some tests that use the test environment
-end)
-```
-
-```moon
-import use_test_env from require "lapis.spec"
-
-describe "my_site", ->
-  use_test_env!
-
-  -- write some tests that use the test environment
-```
-
 ## Using the Test Server
 
 While mocking a request is useful, it doesn't give you access to the entire
 stack that your application uses. For that reason you can spawn up a *test*
 server which you can issue real HTTP requests to.
 
-The test server runs inside of the `test` environment (compared to
-`development` and `production`). This enables you to have a separate database
-connection for tests so you are free to delete and create rows in the database
-without messing up your development state.
+It's important to realize that when using the test server there are actually
+*at least two* Lua runtimes executing your code:
 
-Additionally, when starting the test server, the local running Lapis
-environment is also overridden to be `test`. Likewise, if you've set up a test
-database for your test environment, you're free to run any queries without
-interfering with development state.
+1. The foreground process running the test suite
+2. The `nginx` server's Lua runtime -- If you have multiple workers enabled, then there can be multiple concurrent Lua runtimes. It's recommended to set `worker_processes` to `1` in the test environment.
 
-Instead of using the `use_test_env` function from above, we'll call the
-`use_test_server` function.
+This is an important distinction to pay attention to because any changes you
+make to in-memory data in one runtime will not be seen in the other. Changes
+you make to the database would be accessible to both though, as they would both
+use the same configuration to connect to the same database.
 
+Any `stub` or similar functions provided by your test suite will be unable to
+change any code running in the server.
+
+> Both runtimes have their Lapis environment set to`test`  to ensure that they
+> each load the same configuration.
+
+> There can only be one test server running at any time, meaning you can not
+> parallelize your tests if you attempt to spawn multiple processes.
+
+
+The `use_test_server` function will ensure that the test server is running for
+the duration of the specs within the block:
 
 ```lua
 local use_test_server = require("lapis.spec").use_test_server
@@ -285,4 +281,110 @@ supports the following options in the table:
 
 The function has three return values: the status code as a number, the body of
 the response and any response headers in a table.
+
+
+### `get_current_server()`
+
+Returns the currently attached test server. This will provide a handle to the
+server that enables you to execute code within that process.
+
+The `exec` method will execute Lua code on the server.
+
+
+```lua
+local get_current_server = require("lapis.spec.server").get_current_server
+local use_test_server = require("lapis.spec").use_test_server
+
+describe("my site", function()
+  use_test_server()
+
+  it("runs code on server", function()
+    local server = assert(get_current_server())
+    server:exec([[
+      require("myapp").some_variable = 100
+    ]])
+  end)
+end)
+```
+
+```moon
+import use_test_server from require "lapis.spec"
+import get_current_server from require "lapis.spec.server"
+
+describe "my_site", ->
+  use_test_server!
+
+  it "runs code on server", ->
+    server = assert get_current_server!
+    server\exec [[
+      require("myapp").some_variable = 100
+    ]]
+```
+
+## Test Strategies
+
+### Working with Models
+
+When writing tests that work with your models it's useful to have a separate
+test database where data can reset and generated to unit test model
+functionality. By having a functioning database connection you can perform full
+integration testing across your application code and the database, ensuring
+that it works as intended.
+
+The typical strategy is:
+
+* Before every test, truncate the tables of the models that are accessed by the code that will run in the test
+* Within your test suite:
+  * Use a *factory* function to create any rows that may be needed for an initial state
+  * Perform your tests using the models as you would in your application
+
+
+Because truncating tables is a common operation, Lapis provides a
+`truncate_tables` function:
+
+> Truncate tables will **delete** all the data in the respective
+> table, with no way to get it back. Because this is a dangerous operation it
+> will only run when the current environment is named `test`
+
+
+```moon
+import truncate_tables from require "lapis.spec.db"
+
+describe "User profiles", ->
+  import Users, Profiles from require "models"
+
+  before_each ->
+    truncate_tables Users, Profiles
+
+  user_factory = do
+    user_counter = 0
+    ->
+      user_counter += 1
+      Users\create {
+        login: "user-#{user_counter}"
+      }
+
+  it "fetches or creates the user's profile", ->
+    user1 = user_factory!
+    user2 = user_factory!
+
+    user1\create_profile_if_necessary!
+
+    assert.truthy user1\get_profile!, "user1 should have a profile"
+    assert.nil user2\get_profile!, "user2 should not have a profile"
+```
+
+Because some models might have *unique indexes* on certain fields, like `login`
+on the User model above, we can use the *counter* pattern to ensure that our
+factory function generates a new User row without conflict.
+
+If you have many factories that you re-use across different test files, it can
+be helpful to put it into a separate module that you can `require` into your
+tests as needed.
+
+
+ [Busted]: http://olivinelabs.com/busted/
+
+
+
 

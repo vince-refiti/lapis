@@ -38,7 +38,7 @@ class Model extends BaseModel
         nil_fields or= {}
         nil_fields[k] = true
         continue
-      elseif db.is_raw v
+      elseif not return_all and db.is_raw v
         returning or= {@primary_keys!}
         table.insert returning, k
 
@@ -100,6 +100,12 @@ class Model extends BaseModel
       time = @@db.format_date!
       values.updated_at or= time
 
+    if opts and opts.where
+      assert type(opts.where) == "table", "Model.update: where condition must be a table"
+      cond = {k,v for k,v in pairs cond}
+      for k,v in pairs opts.where
+        cond[k] = v
+
     local returning
     for k, v in pairs values
       if v == db.NULL
@@ -108,12 +114,16 @@ class Model extends BaseModel
         returning or= {}
         table.insert returning, k
 
+    local res
+
     if returning
-      with res = db.update @@table_name!, values, cond, unpack returning
-        if update = unpack res
-          for k in *returning
-            @[k] = update[k]
+      res = db.update @@table_name!, values, cond, unpack returning
+      if update = unpack res
+        for k in *returning
+          @[k] = update[k]
     else
-      db.update @@table_name!, values, cond
+      res = db.update @@table_name!, values, cond
+
+    (res.affected_rows or 0) > 0, res
 
 { :Model, :Enum, :enum, :preload }

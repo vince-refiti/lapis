@@ -7,6 +7,7 @@ insert = table.insert
 local json = require("cjson")
 local unpack = unpack or table.unpack
 local capture_errors, capture_errors_json, respond_to
+local MISSING_ROUTE_NAME_ERORR = "Attempted to load action `true` for route with no name, a name must be provided to require the action"
 local run_before_filter
 run_before_filter = function(filter, r)
   local _write = r.write
@@ -22,7 +23,7 @@ end
 local load_action
 load_action = function(prefix, action, route_name)
   if action == true then
-    assert(route_name, "Attempted to load action `true` for route with no name, a name must be provided to require the action")
+    assert(route_name, MISSING_ROUTE_NAME_ERORR)
     return require(tostring(prefix) .. "." .. tostring(route_name))
   elseif type(action) == "string" then
     return require(tostring(prefix) .. "." .. tostring(action))
@@ -159,7 +160,7 @@ do
         r.options.headers = r.options.headers or { }
         local param_dump = logger.flatten_params(r.original_request.url_params)
         local error_payload = {
-          summary = "[" .. tostring(r.original_request.req.cmd_mth) .. "] " .. tostring(r.original_request.req.cmd_url) .. " " .. tostring(param_dump),
+          summary = "[" .. tostring(r.original_request.req.method) .. "] " .. tostring(r.original_request.req.request_uri) .. " " .. tostring(param_dump),
           err = err,
           trace = trace
         }
@@ -287,6 +288,9 @@ do
       end
       self.responders = self.responders or { }
       local existing = self.responders[route_name or path]
+      if type(handler) ~= "function" then
+        handler = load_action(self.actions_prefix, handler, route_name)
+      end
       local tbl = {
         [upper_meth] = handler
       }
@@ -338,6 +342,14 @@ do
           _continue_0 = true
           break
         end
+        if name_prefix then
+          if type(action) == "string" then
+            action = name_prefix .. action
+          elseif action == true then
+            assert(type(path) == "table", "include: " .. tostring(MISSING_ROUTE_NAME_ERORR))
+            action = next(path)
+          end
+        end
         do
           local before_filters = other_app.before_filters
           if before_filters then
@@ -349,7 +361,7 @@ do
                   return 
                 end
               end
-              return fn(r)
+              return load_action(r.app.actions_prefix, fn, r.route_name)(r)
             end
           end
         end
@@ -370,13 +382,17 @@ do
       layout = false
     }
   end
+  local on_invalid_method
+  on_invalid_method = function(self)
+    return error("don't know how to respond to " .. tostring(self.req.method))
+  end
   respond_to = function(tbl)
-    if not (tbl.HEAD) then
+    if tbl.HEAD == nil then
       tbl.HEAD = default_head
     end
     local out
     out = function(self)
-      local fn = tbl[self.req.cmd_mth]
+      local fn = tbl[self.req.method]
       if fn then
         do
           local before = tbl.before
@@ -388,7 +404,7 @@ do
         end
         return fn(self)
       else
-        return error("don't know how to respond to " .. tostring(self.req.cmd_mth))
+        return (tbl.on_invalid_method or on_invalid_method)(self)
       end
     end
     do

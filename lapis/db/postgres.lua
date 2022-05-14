@@ -51,7 +51,13 @@ local BACKENDS = {
     local pgmoon_conn
     local _query
     _query = function(str)
-      local pgmoon = ngx and ngx.ctx.pgmoon or pgmoon_conn
+      local use_nginx = ngx and ngx.ctx and ngx.socket
+      local pgmoon
+      if use_nginx then
+        pgmoon = ngx.ctx.pgmoon
+      else
+        pgmoon = pgmoon_conn
+      end
       if not (pgmoon) then
         local Postgres
         Postgres = require("pgmoon").Postgres
@@ -64,7 +70,15 @@ local BACKENDS = {
         if not (success) then
           error("postgres failed to connect: " .. tostring(connect_err))
         end
-        if ngx then
+        if config.measure_performance then
+          local _exp_0 = pgmoon.sock_type
+          if "nginx" == _exp_0 then
+            set_perf("pgmoon_conn", "nginx." .. tostring(pgmoon.sock:getreusedtimes() > 0 and "reuse" or "new"))
+          else
+            set_perf("pgmoon_conn", tostring(pgmoon.sock_type) .. ".new")
+          end
+        end
+        if use_nginx then
           ngx.ctx.pgmoon = pgmoon
           after_dispatch(function()
             return pgmoon:keepalive()
@@ -75,12 +89,6 @@ local BACKENDS = {
       end
       local start_time
       if config.measure_performance then
-        do
-          local reused = ngx and pgmoon.sock:getreusedtimes()
-          if reused then
-            set_perf("pgmoon_conn", reused > 0 and "reuse" or "new")
-          end
-        end
         if not (gettime) then
           gettime = require("socket").gettime
         end
@@ -265,15 +273,35 @@ add_returning = function(buff, first, cur, following, ...)
   end
 end
 local _insert
-_insert = function(tbl, values, ...)
+_insert = function(tbl, values, opts, ...)
   local buff = {
     "INSERT INTO ",
     escape_identifier(tbl),
     " "
   }
   encode_values(values, buff)
-  if ... then
-    add_returning(buff, true, ...)
+  local opts_type = type(opts)
+  if opts_type == "string" or opts_type == "table" and is_raw(opts) then
+    add_returning(buff, true, opts, ...)
+  elseif opts_type == "table" then
+    if opts.on_conflict then
+      if opts.on_conflict == "do_nothing" then
+        append_all(buff, " ON CONFLICT DO NOTHING")
+      else
+        error("db.insert: unsupported value for on_conflict option: " .. tostring(tostring(opts.on_conflict)))
+      end
+    end
+    do
+      local r = opts.returning
+      if r then
+        if r == "*" then
+          add_returning(buff, true, raw("*"))
+        else
+          assert(type(r) == "table" and not is_raw(r), "db.insert: returning option must be a table array")
+          add_returning(buff, true, unpack(r))
+        end
+      end
+    end
   end
   return raw_query(concat(buff))
 end

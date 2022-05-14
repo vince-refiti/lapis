@@ -1,6 +1,6 @@
-
-
 util = require 'luassert.util'
+
+pairs = _G.pairs
 
 one_of = (state, arguments) ->
   { input, expected } = arguments
@@ -37,7 +37,23 @@ with_query_fn = (q, run, db=require "lapis.db.postgres") ->
     with run!
       db.set_raw_query old_query
 
+is_string_array = (list) ->
+  return false unless type(list) == "table"
+
+  for k,v in pairs list
+    if type(k) != "number"
+      return false
+
+    if type(v) != "string"
+      return false
+
+  return true
+
 assert_queries = (expected, result, opts) ->
+  -- short circuit for better error messsage
+  if not opts and is_string_array expected
+    return assert.same expected, result
+
   if #expected != #result
     error "number of expected queries (#{#expected}) does not match number received (#{#result})"
 
@@ -64,7 +80,8 @@ stub_queries = ->
   get_queries = -> queries
 
   mock_query = (pattern, result) ->
-    query_mock[pattern] = result
+    -- insert on the front to take precedence
+    table.insert query_mock, 1, {pattern, result}
 
   show_queries = os.getenv("LAPIS_SHOW_QUERIES")
 
@@ -77,13 +94,13 @@ stub_queries = ->
 
       table.insert queries, (q\gsub("%s+", " ")\gsub("[\n\t]", " "))
 
-      -- try to find a mock
-      for k,v in pairs query_mock
-        if q\match k
-          return if type(v) == "function"
-            v!
+      -- try to find a mock with pattern that matches query
+      for {pattern, result} in *query_mock
+        if q\match pattern
+          return if type(result) == "function"
+            result q
           else
-            v
+            result
 
       {}
 
@@ -97,4 +114,29 @@ stub_queries = ->
 
   get_queries, mock_query
 
-{ :with_query_fn, :assert_queries, :stub_queries }
+-- note: we can't do stub(_G, "pairs") because of a limitation of busted
+sorted_pairs = (sort=table.sort) ->
+  import before_each, after_each from require "busted"
+  local _pairs
+  before_each ->
+    _pairs = _G.pairs
+    _G.pairs = (object, ...) ->
+      keys = [k for k in _pairs object]
+      sort keys, (a,b) ->
+        if type(a) == type(b)
+          a < b
+        else
+          type(a) < type(b)
+
+      idx = 0
+
+      ->
+        idx += 1
+        key = keys[idx]
+        if key != nil
+          key, object[key]
+
+  after_each ->
+    _G.pairs = _pairs
+
+{ :with_query_fn, :assert_queries, :stub_queries, :sorted_pairs }

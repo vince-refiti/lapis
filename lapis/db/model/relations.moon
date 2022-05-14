@@ -15,40 +15,69 @@ find_relation = (model, name) ->
   if p = model.__parent
     find_relation p, name
 
+local preload
+
+-- preload_relation is inserted into the relation class as a method
+-- self: model class
+-- objects: array of instances of model
+-- name: the name of the relation to preload
+-- ...: options passed to preloader
 preload_relation = (objects, name, ...) =>
-  preloader = @relation_preloaders[name]
+  -- relations prefixed with ? are optional loads, we can skip it if it doesn't exist
+  optional = if name\sub(1,1) == "?"
+    name = name\sub 2
+    true
+
+  preloader = @relation_preloaders and @relation_preloaders[name]
 
   unless preloader
+    return false if optional
     error "Model #{@__name} doesn't have preloader for #{name}"
 
   preloader @, objects, ...
   true
 
+-- this function is deprecated, replaced by 'preload', which has support for
+-- nested relations of different types
 preload_relations = (objects, name, ...) =>
-  preloader = @relation_preloaders[name]
-  unless preloader
-    error "Model #{@__name} doesn't have preloader for #{name}"
-
-  preloader @, objects
+  preload_relation @, objects, name
 
   if ...
-    @preload_relations objects, ...
+    preload_relations @, objects, ...
   else
     true
 
+-- this is used to preload a list of model instances, `objects`, that are all
+-- the same type, `model`.
+-- * `front` -- name of the relation to preload, it can either be a table
+--   description or a single relation name
+-- * `sub_relations` will hold the outlist list of models that have been loaded
+--   indexed by any subsequent relations to load
 preload_homogeneous = (sub_relations, model, objects, front, ...) ->
   import to_json from require "lapis.util"
   return unless front
 
   if type(front) == "table"
-    for key,val in pairs front
+    for key, val in pairs front
       relation = type(key) == "string" and key or val
-      preload_relation model, objects, relation
+
+      -- this lets you set pass preload opts by using the reference to the
+      -- preload function as a special key
+      preload_opts = type(val) == "table" and val[preload] or nil
+
+      preload_relation model, objects, relation, preload_opts
 
       if type(key) == "string"
-        r = find_relation model, key
+        optional, relation_name = if key\sub(1,1) == "?"
+          true, key\sub 2
+        else
+          false, key
+
+        r = find_relation model, relation_name
+
         unless r
-          error "missing relation: #{key}"
+          continue if optional
+          error "Model #{model.__name} doesn't have preloader for #{relation_name}"
 
         sub_relations or= {}
         sub_relations[val] or= {}
@@ -56,11 +85,12 @@ preload_homogeneous = (sub_relations, model, objects, front, ...) ->
 
         if r.has_many or r.fetch and r.many
           for obj in *objects
-            for fetched in *obj[key]
+            continue unless obj[relation_name] -- if the preloader didn't insert array then just skip
+            for fetched in *obj[relation_name]
               table.insert loaded_objects, fetched
         else
           for obj in *objects
-            table.insert loaded_objects, obj[key]
+            table.insert loaded_objects, obj[relation_name]
   else
     preload_relation model, objects, front
 
@@ -137,6 +167,12 @@ get_relations_class = (model) ->
 
 fetch = (name, opts) =>
   source = opts.fetch
+  if source == true
+    assert type(opts.preload) == "function", "You set fetch to `true` but did not provide a `preload` function"
+    source = =>
+      @@preload_relation { @ }, name
+      @[name]
+
   assert type(source) == "function", "Expecting function for `fetch` relation"
 
   get_method = opts.as or "get_#{name}"
@@ -242,7 +278,6 @@ has_one = (name, opts) =>
 
   @relation_preloaders[name] = (objects, preload_opts) =>
     model = assert_model @@, source
-
 
     key = if type(opts.key) == "table"
       opts.key

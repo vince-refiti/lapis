@@ -6,9 +6,12 @@ db = require "lapis.db.postgres"
 import Model from require "lapis.db.postgres.model"
 import stub_queries, assert_queries from require "spec.helpers"
 
+import sorted_pairs from require "spec.helpers"
+
 time = 1376377000
 
 describe "lapis.db.model", ->
+  sorted_pairs!
   get_queries, mock_query = stub_queries!
 
   local old_date
@@ -61,10 +64,7 @@ describe "lapis.db.model", ->
 
       assert_queries {
         [[SELECT * from "things" where "id" = 'hello' limit 1]]
-        {
-          [[SELECT * from "things" where "cat" = TRUE AND "weight" = 120 limit 1]]
-          [[SELECT * from "things" where "weight" = 120 AND "cat" = TRUE limit 1]]
-        }
+        [[SELECT * from "things" where "cat" = TRUE AND "weight" = 120 limit 1]]
       }
 
     it "composite primary key", ->
@@ -73,10 +73,7 @@ describe "lapis.db.model", ->
 
       Things2\find 1,2
       assert_queries {
-        {
-          [[SELECT * from "things" where "world" = 2 AND "hello" = 1 limit 1]]
-          [[SELECT * from "things" where "hello" = 1 AND "world" = 2 limit 1]]
-        }
+        [[SELECT * from "things" where "hello" = 1 AND "world" = 2 limit 1]]
       }
 
   describe "find_all", ->
@@ -136,15 +133,7 @@ describe "lapis.db.model", ->
 
       -- :/
       assert_queries {
-        {
-          [[SELECT hello, world from "things" WHERE "dad" IN (1, 2, 4) AND "height" = '10px' AND "color" = 'blue']]
-          [[SELECT hello, world from "things" WHERE "height" = '10px' AND "dad" IN (1, 2, 4) AND "color" = 'blue']]
-          [[SELECT hello, world from "things" WHERE "height" = '10px' AND "color" = 'blue' AND "dad" IN (1, 2, 4)]]
-
-          [[SELECT hello, world from "things" WHERE "dad" IN (1, 2, 4) AND "color" = 'blue' AND "height" = '10px']]
-          [[SELECT hello, world from "things" WHERE "color" = 'blue' AND "dad" IN (1, 2, 4) AND "height" = '10px']]
-          [[SELECT hello, world from "things" WHERE "color" = 'blue' AND "height" = '10px' AND "dad" IN (1, 2, 4)]]
-        }
+        [[SELECT hello, world from "things" WHERE "color" = 'blue' AND "dad" IN (1, 2, 4) AND "height" = '10px']]
       }
 
     it "with complex options & interpolated clause", ->
@@ -160,10 +149,7 @@ describe "lapis.db.model", ->
       }
 
       assert_queries {
-        {
-          [[SELECT hello, world from "things" WHERE "dad" IN (1, 2, 4) AND "color" = 'blue' order by id limit 1234]]
-          [[SELECT hello, world from "things" WHERE "color" = 'blue' AND "dad" IN (1, 2, 4) order by id limit 1234]]
-        }
+        [[SELECT hello, world from "things" WHERE "color" = 'blue' AND "dad" IN (1, 2, 4) order by id limit 1234]]
       }
 
     it "with complex options & plain clause", ->
@@ -177,10 +163,7 @@ describe "lapis.db.model", ->
       }
 
       assert_queries {
-        {
-          [[SELECT hello, world from "things" WHERE "dad" IN (1, 2, 4) AND "color" = 'blue' group by color]]
-          [[SELECT hello, world from "things" WHERE "color" = 'blue' AND "dad" IN (1, 2, 4) group by color]]
-        }
+        [[SELECT hello, world from "things" WHERE "color" = 'blue' AND "dad" IN (1, 2, 4) group by color]]
       }
 
 
@@ -259,19 +242,9 @@ describe "lapis.db.model", ->
 
     assert_queries {
       [[INSERT INTO "things" ("color") VALUES ('blue') RETURNING "id"]]
-      {
-        [[INSERT INTO "timed_things" ("hello", "created_at", "updated_at") VALUES ('world', '2013-08-13 06:56:40', '2013-08-13 06:56:40') RETURNING "id"]]
-        [[INSERT INTO "timed_things" ("created_at", "hello", "updated_at") VALUES ('2013-08-13 06:56:40', 'world', '2013-08-13 06:56:40') RETURNING "id"]]
-        [[INSERT INTO "timed_things" ("created_at", "updated_at", "hello") VALUES ('2013-08-13 06:56:40', '2013-08-13 06:56:40', 'world') RETURNING "id"]]
-
-        [[INSERT INTO "timed_things" ("hello", "updated_at", "created_at") VALUES ('world', '2013-08-13 06:56:40', '2013-08-13 06:56:40') RETURNING "id"]]
-        [[INSERT INTO "timed_things" ("updated_at", "hello", "created_at") VALUES ('2013-08-13 06:56:40', 'world', '2013-08-13 06:56:40') RETURNING "id"]]
-        [[INSERT INTO "timed_things" ("updated_at", "created_at", "hello") VALUES ('2013-08-13 06:56:40', '2013-08-13 06:56:40', 'world') RETURNING "id"]]
-      }
-      {
-        [[INSERT INTO "other_things" ("height", "id_a") VALUES ('400px', 120) RETURNING "id_a", "id_b"]]
-        [[INSERT INTO "other_things" ("id_a", "height") VALUES (120, '400px') RETURNING "id_a", "id_b"]]
-      }
+      [[INSERT INTO "timed_things" ("created_at", "hello", "updated_at") VALUES ('2013-08-13 06:56:40', 'world', '2013-08-13 06:56:40') RETURNING "id"]]
+      [[INSERT INTO "other_things" ("height", "id_a") VALUES ('400px', 120) RETURNING "id_a", "id_b"]]
+      
     }
 
   it "should create model with options", ->
@@ -283,15 +256,7 @@ describe "lapis.db.model", ->
     TimedThings\create { color: "blue" }, returning: { "height" }
 
     assert_queries {
-      {
-        [[INSERT INTO "timed_things" ("color", "created_at", "updated_at") VALUES ('blue', '2013-08-13 06:56:40', '2013-08-13 06:56:40') RETURNING "id", "height"]]
-        [[INSERT INTO "timed_things" ("created_at", "color", "updated_at") VALUES ('2013-08-13 06:56:40', 'blue', '2013-08-13 06:56:40') RETURNING "id", "height"]]
-        [[INSERT INTO "timed_things" ("created_at", "updated_at", "color") VALUES ('2013-08-13 06:56:40', '2013-08-13 06:56:40', 'blue') RETURNING "id", "height"]]
-
-        [[INSERT INTO "timed_things" ("color", "updated_at", "created_at") VALUES ('blue', '2013-08-13 06:56:40', '2013-08-13 06:56:40') RETURNING "id", "height"]]
-        [[INSERT INTO "timed_things" ("updated_at", "color", "created_at") VALUES ('2013-08-13 06:56:40', 'blue', '2013-08-13 06:56:40') RETURNING "id", "height"]]
-        [[INSERT INTO "timed_things" ("updated_at", "created_at", "color") VALUES ('2013-08-13 06:56:40', '2013-08-13 06:56:40', 'blue') RETURNING "id", "height"]]
-      }
+      [[INSERT INTO "timed_things" ("color", "created_at", "updated_at") VALUES ('blue', '2013-08-13 06:56:40', '2013-08-13 06:56:40') RETURNING "id", "height"]]
     }
 
   it "should create model with returning *", ->
@@ -312,15 +277,17 @@ describe "lapis.db.model", ->
   it "strips db.NULL when creating with return *", ->
     mock_query "INSERT", { { id: 101 } }
     class Hi extends Model
-    row = Hi\create { color: db.NULL }, returning: "*"
+    row1 = Hi\create { color: db.NULL }, returning: "*"
+    row2 = Hi\create { color: db.raw "x+y" }, returning: "*"
 
     assert_queries {
       [[INSERT INTO "hi" ("color") VALUES (NULL) RETURNING *]]
+      [[INSERT INTO "hi" ("color") VALUES (x+y) RETURNING *]]
     }
 
     assert.same {
       id: 101
-    }, row
+    }, row1
 
   it "should refresh model", ->
     class Things extends Model
@@ -356,27 +323,32 @@ describe "lapis.db.model", ->
     assert.same { a: "hello", b: false }, instance
 
     assert_queries {
-      {
-        [[SELECT * from "things" where "a" = 'hello' AND "b" = FALSE]]
-        [[SELECT * from "things" where "b" = FALSE AND "a" = 'hello']]
-      }
-      {
-        [[SELECT "hello" from "things" where "a" = 'hello' AND "b" = FALSE]]
-        [[SELECT "hello" from "things" where "b" = FALSE AND "a" = 'hello']]
-      }
+      [[SELECT * from "things" where "a" = 'hello' AND "b" = FALSE]]
+      [[SELECT "hello" from "things" where "a" = 'hello' AND "b" = FALSE]]
     }
 
-  it "should update model", ->
+  it "updates model", ->
     class Things extends Model
 
     thing = Things\load { id: 12 }
-    thing\update color: "green", height: 100
+
+    -- no query is mocked
+    assert.same {
+      false, {}
+    }, {
+      thing\update color: "green", height: 100
+    }
 
     assert.same { height: 100, color: "green", id: 12 }, thing
 
-    thing2 = Things\load { age: 2000, sprit: true }
-    thing2\update "age"
+    mock_query ".", { affected_rows: 1 }
 
+    thing2 = Things\load { age: 2000, sprit: true }
+    assert.same {
+      true, {affected_rows: 1}
+    }, {
+      thing2\update "age"
+    }
 
     class TimedThings extends Model
       @primary_key: {"a", "b"}
@@ -389,32 +361,108 @@ describe "lapis.db.model", ->
 
     thing3.hello = "world"
     thing3\update "hello", timestamp: false
-    thing3\update { cat: "dog" }, timestamp: false
+
+    mock_query ".", { affected_rows: 0 }
+
+    assert.same {
+      false, { affected_rows: 0 }
+    }, {
+      thing3\update { cat: "dog" }, timestamp: false
+    }
 
     assert_queries {
-      {
-        [[UPDATE "things" SET "height" = 100, "color" = 'green' WHERE "id" = 12]]
-        [[UPDATE "things" SET "color" = 'green', "height" = 100 WHERE "id" = 12]]
-      }
+      [[UPDATE "things" SET "color" = 'green', "height" = 100 WHERE "id" = 12]]
+      
       [[UPDATE "things" SET "age" = 2000 WHERE "id" IS NULL]]
-      {
-        [[UPDATE "timed_things" SET "updated_at" = '2013-08-13 06:56:40', "great" = TRUE WHERE "a" = 2 AND "b" = 3]]
-        [[UPDATE "timed_things" SET "great" = TRUE, "updated_at" = '2013-08-13 06:56:40' WHERE "a" = 2 AND "b" = 3]]
+      [[UPDATE "timed_things" SET "great" = TRUE, "updated_at" = '2013-08-13 06:56:40' WHERE "a" = 2 AND "b" = 3]]
+      [[UPDATE "timed_things" SET "hello" = 'world' WHERE "a" = 2 AND "b" = 3]]
+      [[UPDATE "timed_things" SET "cat" = 'dog' WHERE "a" = 2 AND "b" = 3]]
+    }
 
-        [[UPDATE "timed_things" SET "updated_at" = '2013-08-13 06:56:40', "great" = TRUE WHERE "b" = 3 AND "a" = 2]]
-        [[UPDATE "timed_things" SET "great" = TRUE, "updated_at" = '2013-08-13 06:56:40' WHERE "b" = 3 AND "a" = 2]]
-      }
+  it "updates model with conditional", ->
+    mock_query ".", { affected_rows: 1 }
+
+    class Things extends Model
+
+    class TimedThings extends Model
+      @primary_key: {"a", "b"}
+      @timestamp: true
+
+    thing = Things\load { id: 12 }
+
+    assert.same {
+      true, { affected_rows: 1 }
+    }, {
+      thing\update { color: "green", height: 100}, where: { color: "blue"}
+    }
+
+    assert.same {id: 12 }, thing\_primary_cond!
+    assert.same {
+      color: "green"
+      height: 100
+      id: 12
+    }, thing
+
+    thing2 = TimedThings\load { a: 2, b: 3 }
+    thing2\update {
+      b: 4
+      actor: "good"
+    }, where: {
+      [db.raw "true"]: db.raw "update_count < 100"
+      update_id: db.NULL
+    }
+
+    assert.same {
+      a: 2
+      b: 4
+      actor: "good"
+    }, thing2
+
+    mock_query "count %+ 1", {
+      affected_rows: 1
       {
-        [[UPDATE "timed_things" SET "hello" = 'world' WHERE "a" = 2 AND "b" = 3]]
-        [[UPDATE "timed_things" SET "hello" = 'world' WHERE "b" = 3 AND "a" = 2]]
-      }
-      {
-        [[UPDATE "timed_things" SET "cat" = 'dog' WHERE "a" = 2 AND "b" = 3]]
-        [[UPDATE "timed_things" SET "cat" = 'dog' WHERE "b" = 3 AND "a" = 2]]
+        count: 200
+        height: 44
+        duplex: "cat"
       }
     }
 
-  it "should delete model", ->
+    thing\update {
+      count: db.raw "count + 1"
+    }, where: {
+      count: 0
+    }
+
+    assert.same 200, thing.count
+    assert.same 100, thing.height -- doesn't pull random field
+    assert.same nil, thing.duplex -- doesn't pull random field
+
+    thing2.b = nil
+    thing2\update {
+      color: "green"
+    }, {
+      timestamp: false
+      where: { age: "10" }
+    }
+
+    assert.has_error(
+      ->
+        thing2\update {
+          color: "green"
+        }, {
+          where: "oopsie"
+        }
+      "Model.update: where condition must be a table"
+    )
+
+    assert_queries {
+      [[UPDATE "things" SET "color" = 'green', "height" = 100 WHERE "color" = 'blue' AND "id" = 12]]
+      [[UPDATE "timed_things" SET "actor" = 'good', "b" = 4, "updated_at" = '2013-08-13 06:56:40' WHERE "a" = 2 AND "b" = 3 AND "update_id" IS NULL AND true = update_count < 100]]
+      [[UPDATE "things" SET "count" = count + 1 WHERE "count" = 0 AND "id" = 12 RETURNING "count"]]
+      [[UPDATE "timed_things" SET "color" = 'green' WHERE "a" = 2 AND "age" = '10' AND "b" IS NULL]]
+    }
+
+  it "deletes model", ->
     class Things extends Model
 
     thing = Things\load { id: 2 }
@@ -422,7 +470,6 @@ describe "lapis.db.model", ->
 
     thing = Things\load { }
     thing\delete!
-
 
     class Things2 extends Model
       @primary_key: {"key1", "key2"}
@@ -433,10 +480,7 @@ describe "lapis.db.model", ->
     assert_queries {
       [[DELETE FROM "things" WHERE "id" = 2]]
       [[DELETE FROM "things" WHERE "id" IS NULL]]
-      {
-        [[DELETE FROM "things" WHERE "key1" = 'blah blag' AND "key2" = 4821]]
-        [[DELETE FROM "things" WHERE "key2" = 4821 AND "key1" = 'blah blag']]
-      }
+      [[DELETE FROM "things" WHERE "key1" = 'blah blag' AND "key2" = 4821]]
     }
 
   it "should check unique constraint", ->
@@ -452,10 +496,7 @@ describe "lapis.db.model", ->
 
     assert_queries {
       [[SELECT 1 from "things" where "name" = 'world' limit 1]]
-      {
-        [[SELECT 1 from "things" where "height" = 10 AND "color" = 'red' limit 1]]
-        [[SELECT 1 from "things" where "color" = 'red' AND "height" = 10 limit 1]]
-      }
+      [[SELECT 1 from "things" where "color" = 'red' AND "height" = 10 limit 1]]
     }
 
 
@@ -720,10 +761,7 @@ describe "lapis.db.model", ->
       }, many: true
 
       assert_queries {
-        {
-          [[SELECT * from "thing_items" where ("aid", "bid") in ((100, 201), (101, 202), (101, 203), (102, 204), (102, 205))]]
-          [[SELECT * from "thing_items" where ("bid", "aid") in ((201, 100), (202, 101), (203, 101), (204, 102), (205, 102))]]
-        }
+        [[SELECT * from "thing_items" where ("aid", "bid") in ((100, 201), (101, 202), (101, 203), (102, 204), (102, 205))]]
       }
 
       assert.same {}, things[1].thing_items

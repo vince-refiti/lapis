@@ -602,13 +602,89 @@ do
       return self:render(...)
     end
   end
-  self.include = function(self, other_cls)
-    local mixin_class
-    mixin_class = require("lapis.util").mixin_class
-    if type(other_cls) == "string" then
-      other_cls = require(other_cls)
+  self.get_mixins_class = function(model)
+    local parent = model.__parent
+    if not (parent) then
+      error("model does not have parent class")
     end
-    return mixin_class(self, other_cls)
+    if rawget(parent, "_mixins_class") then
+      return parent, false
+    end
+    local mixins_class
+    do
+      local _class_1
+      local _parent_0 = model.__parent
+      local _base_1 = { }
+      _base_1.__index = _base_1
+      setmetatable(_base_1, _parent_0.__base)
+      _class_1 = setmetatable({
+        __init = function(self, ...)
+          return _class_1.__parent.__init(self, ...)
+        end,
+        __base = _base_1,
+        __name = "mixins_class",
+        __parent = _parent_0
+      }, {
+        __index = function(cls, name)
+          local val = rawget(_base_1, name)
+          if val == nil then
+            local parent = rawget(cls, "__parent")
+            if parent then
+              return parent[name]
+            end
+          else
+            return val
+          end
+        end,
+        __call = function(cls, ...)
+          local _self_0 = setmetatable({}, _base_1)
+          cls.__init(_self_0, ...)
+          return _self_0
+        end
+      })
+      _base_1.__class = _class_1
+      local self = _class_1
+      self.__name = tostring(model.__name) .. "Mixins"
+      self._mixins_class = true
+      if _parent_0.__inherited then
+        _parent_0.__inherited(_parent_0, _class_1)
+      end
+      mixins_class = _class_1
+    end
+    model.__parent = mixins_class
+    setmetatable(model.__base, mixins_class.__base)
+    return mixins_class, true
+  end
+  self.include = function(self, other_cls)
+    local other_cls_name
+    if type(other_cls) == "string" then
+      other_cls, other_cls_name = require(other_cls), other_cls
+    end
+    if other_cls == Widget then
+      error("Your widget tried to include a class that extends from Widget. An included class should be a plain class and not another widget")
+    end
+    local mixins_class = self:get_mixins_class()
+    if other_cls.__parent then
+      self:include(other_cls.__parent)
+    end
+    if not (other_cls.__base) then
+      error("Expecting a class when trying to include " .. tostring(other_cls_name or other_cls) .. " into " .. tostring(self.__name))
+    end
+    for k, v in pairs(other_cls.__base) do
+      local _continue_0 = false
+      repeat
+        if k:match("^__") then
+          _continue_0 = true
+          break
+        end
+        mixins_class.__base[k] = v
+        _continue_0 = true
+      until true
+      if not _continue_0 then
+        break
+      end
+    end
+    return true
   end
   Widget = _class_0
 end

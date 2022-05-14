@@ -84,7 +84,7 @@ create_table = function(name, columns, opts)
   if #columns > 0 then
     add("\n")
   end
-  add(");")
+  add(")")
   return db.query(concat(buffer))
 end
 local create_index
@@ -93,21 +93,22 @@ create_index = function(tname, ...)
   local columns, options = extract_options({
     ...
   })
-  if options.if_not_exists then
-    if entity_exists(index_name) then
-      return 
-    end
+  local prefix
+  if options.unique then
+    prefix = "CREATE UNIQUE INDEX "
+  else
+    prefix = "CREATE INDEX "
   end
   local buffer = {
-    "CREATE"
+    prefix
   }
-  if options.unique then
-    append_all(buffer, " UNIQUE")
-  end
-  append_all(buffer, " INDEX ", escape_identifier(index_name), " ON ", escape_identifier(tname))
   if options.concurrently then
-    append_all(buffer, " CONCURRENTLY ")
+    append_all(buffer, "CONCURRENTLY ")
   end
+  if options.if_not_exists then
+    append_all(buffer, "IF NOT EXISTS ")
+  end
+  append_all(buffer, escape_identifier(index_name), " ON ", escape_identifier(tname))
   if options.method then
     append_all(buffer, " USING ", options.method)
   end
@@ -120,7 +121,7 @@ create_index = function(tname, ...)
   end
   append_all(buffer, ")")
   if options.tablespace then
-    append_all(buffer, " TABLESPACE ", options.tablespace)
+    append_all(buffer, " TABLESPACE ", escape_identifier(options.tablespace))
   end
   if options.where then
     append_all(buffer, " WHERE ", options.where)
@@ -128,17 +129,25 @@ create_index = function(tname, ...)
   if options.when then
     error("did you mean create_index `where`?")
   end
-  append_all(buffer, ";")
   return db.query(concat(buffer))
 end
 local drop_index
 drop_index = function(...)
   local index_name = gen_index_name(...)
-  return db.query("DROP INDEX IF EXISTS " .. tostring(escape_identifier(index_name)))
+  local _, options = extract_options({
+    ...
+  })
+  local buffer = {
+    "DROP INDEX IF EXISTS " .. tostring(escape_identifier(index_name))
+  }
+  if options.cascade then
+    append_all(buffer, " CASCADE")
+  end
+  return db.query(concat(buffer))
 end
 local drop_table
 drop_table = function(tname)
-  return db.query("DROP TABLE IF EXISTS " .. tostring(escape_identifier(tname)) .. ";")
+  return db.query("DROP TABLE IF EXISTS " .. tostring(escape_identifier(tname)))
 end
 local add_column
 add_column = function(tname, col_name, col_type)

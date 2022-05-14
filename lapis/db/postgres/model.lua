@@ -75,6 +75,19 @@ do
         local time = self.__class.db.format_date()
         values.updated_at = values.updated_at or time
       end
+      if opts and opts.where then
+        assert(type(opts.where) == "table", "Model.update: where condition must be a table")
+        do
+          local _tbl_0 = { }
+          for k, v in pairs(cond) do
+            _tbl_0[k] = v
+          end
+          cond = _tbl_0
+        end
+        for k, v in pairs(opts.where) do
+          cond[k] = v
+        end
+      end
       local returning
       for k, v in pairs(values) do
         if v == db.NULL then
@@ -84,23 +97,22 @@ do
           table.insert(returning, k)
         end
       end
+      local res
       if returning then
+        res = db.update(self.__class:table_name(), values, cond, unpack(returning))
         do
-          local res = db.update(self.__class:table_name(), values, cond, unpack(returning))
-          do
-            local update = unpack(res)
-            if update then
-              for _index_0 = 1, #returning do
-                local k = returning[_index_0]
-                self[k] = update[k]
-              end
+          local update = unpack(res)
+          if update then
+            for _index_0 = 1, #returning do
+              local k = returning[_index_0]
+              self[k] = update[k]
             end
           end
-          return res
         end
       else
-        return db.update(self.__class:table_name(), values, cond)
+        res = db.update(self.__class:table_name(), values, cond)
       end
+      return (res.affected_rows or 0) > 0, res
     end
   }
   _base_0.__index = _base_0
@@ -175,7 +187,7 @@ do
           nil_fields[k] = true
           _continue_0 = true
           break
-        elseif db.is_raw(v) then
+        elseif not return_all and db.is_raw(v) then
           returning = returning or {
             self:primary_keys()
           }

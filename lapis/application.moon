@@ -12,6 +12,8 @@ unpack = unpack or table.unpack
 
 local capture_errors, capture_errors_json, respond_to
 
+MISSING_ROUTE_NAME_ERORR = "Attempted to load action `true` for route with no name, a name must be provided to require the action"
+
 run_before_filter = (filter, r) ->
   _write = r.write
   written = false
@@ -25,8 +27,7 @@ run_before_filter = (filter, r) ->
 
 load_action = (prefix, action, route_name) ->
   if action == true
-    assert route_name,
-      "Attempted to load action `true` for route with no name, a name must be provided to require the action"
+    assert route_name, MISSING_ROUTE_NAME_ERORR
 
     require "#{prefix}.#{route_name}"
   elseif type(action) == "string"
@@ -111,6 +112,13 @@ class Application
 
       @responders or= {}
       existing = @responders[route_name or path]
+
+      if type(handler) != "function"
+        -- NOTE: this works slightly differently, as it loads the action
+        -- immediately instead of lazily, how it happens in wrap_handler. This
+        -- is okay for now as we'll likely be overhauling this interface
+        handler = load_action @actions_prefix, handler, route_name
+
       tbl = { [upper_meth]: handler }
 
       if existing
@@ -184,7 +192,7 @@ class Application
       param_dump = logger.flatten_params r.original_request.url_params
 
       error_payload = {
-        summary: "[#{r.original_request.req.cmd_mth}] #{r.original_request.req.cmd_url} #{param_dump}"
+        summary: "[#{r.original_request.req.method}] #{r.original_request.req.request_uri} #{param_dump}"
         :err, :trace
       }
 
@@ -232,6 +240,7 @@ class Application
     insert @before_filters, fn
 
   -- copies all actions into this application, preserves before filters
+  -- other app can just be a plain table, doesn't have to be another application
   -- @include other_app, path: "/hello", name: "hello_"
   @include: (other_app, opts, into=@__base) =>
     if type(other_app) == "string"
@@ -242,6 +251,7 @@ class Application
 
     for path, action in pairs other_app.__base
       t = type path
+      -- named action
       if t == "table"
         if path_prefix
           name = next path
@@ -251,18 +261,29 @@ class Application
           name = next path
           path[name_prefix .. name] = path[name]
           path[name] = nil
+      -- route only action
       elseif t == "string" and path\match "^/"
         if path_prefix
           path = path_prefix .. path
+      -- other field in class, ignore
       else
         continue
+
+      if name_prefix
+        -- normalize and adjust lazy loaded actions
+        if type(action) == "string"
+          action = name_prefix .. action
+        elseif action == true
+          assert type(path) == "table", "include: #{MISSING_ROUTE_NAME_ERORR}"
+          action = next(path) -- the route name is the only key in the table
 
       if before_filters = other_app.before_filters
         fn = action
         action = (r) ->
           for filter in *before_filters
             return if run_before_filter filter, r
-          fn r
+
+          load_action(r.app.actions_prefix, fn, r.route_name) r
 
       into[path] = action
 
@@ -298,18 +319,19 @@ class Application
 
 respond_to = do
   default_head = -> layout: false -- render nothing
+  on_invalid_method = => error "don't know how to respond to #{@req.method}"
 
   (tbl) ->
-    tbl.HEAD = default_head unless tbl.HEAD
+    tbl.HEAD = default_head if tbl.HEAD == nil
 
     out = =>
-      fn = tbl[@req.cmd_mth]
+      fn = tbl[@req.method]
       if fn
         if before = tbl.before
           return if run_before_filter before, @
         fn @
       else
-        error "don't know how to respond to #{@req.cmd_mth}"
+        (tbl.on_invalid_method or on_invalid_method) @
 
     if error_response = tbl.on_error
       out = capture_errors out, error_response

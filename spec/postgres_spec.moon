@@ -7,6 +7,8 @@ unpack = unpack or table.unpack
 
 value_table = { hello: "world", age: 34 }
 
+import sorted_pairs from require "spec.helpers"
+
 tests = {
   -- lapis.db.postgres
   {
@@ -192,6 +194,51 @@ tests = {
     [[INSERT INTO "cats" ("age", "name") VALUES (123, 'catter') RETURNING "age", "name"]]
   }
 
+  {
+    -> db.insert "cats", { profile: "blue" }, db.raw "*"
+    [[INSERT INTO "cats" ("profile") VALUES ('blue') RETURNING *]]
+  }
+
+  {
+    -> db.insert "cats", { profile: "blue" }, db.raw "date_trunc('year', created_at) as create_year"
+    [[INSERT INTO "cats" ("profile") VALUES ('blue') RETURNING date_trunc('year', created_at) as create_year]]
+  }
+
+  {
+    -> db.insert "cats", { profile: "blue" }, "hello", db.raw "id + 3 as three_id"
+    [[INSERT INTO "cats" ("profile") VALUES ('blue') RETURNING "hello", id + 3 as three_id]]
+  }
+
+  {
+    -> db.insert "cats", { profile: "blue" }, returning: { }
+    [[INSERT INTO "cats" ("profile") VALUES ('blue')]]
+  }
+
+  {
+    -> db.insert "cats", { profile: "blue" }, returning: "*"
+    [[INSERT INTO "cats" ("profile") VALUES ('blue') RETURNING *]]
+  }
+
+  {
+    -> db.insert "cats", { profile: "blue" }, returning: { "one" }
+    [[INSERT INTO "cats" ("profile") VALUES ('blue') RETURNING "one"]]
+  }
+
+  {
+    -> db.insert "cats", { profile: "blue" }, returning: { "one", db.raw "a+c as thing" }
+    [[INSERT INTO "cats" ("profile") VALUES ('blue') RETURNING "one", a+c as thing]]
+  }
+
+  {
+    -> db.insert "cats", { profile: "blue" }, on_conflict: "do_nothing"
+    [[INSERT INTO "cats" ("profile") VALUES ('blue') ON CONFLICT DO NOTHING]]
+  }
+
+  {
+    -> db.insert "cats", { profile: "blue" }, on_conflict: "do_nothing", returning: "*"
+    [[INSERT INTO "cats" ("profile") VALUES ('blue') ON CONFLICT DO NOTHING RETURNING *]]
+  }
+
 
   -- lapis.db.postgres.schema
 
@@ -287,7 +334,7 @@ tests = {
   "password_reset_token" character varying(255),
   "data" text NOT NULL,
   PRIMARY KEY (user_id)
-);]]
+)]]
   }
 
   {
@@ -301,13 +348,53 @@ tests = {
     [[CREATE TABLE IF NOT EXISTS "join_stuff" (
   "hello_id" integer NOT NULL,
   "world_id" integer NOT NULL
-);]]
+)]]
   }
 
 
   {
     -> schema.drop_table "user_data"
-    [[DROP TABLE IF EXISTS "user_data";]]
+    [[DROP TABLE IF EXISTS "user_data"]]
+  }
+
+  {
+    -> schema.create_index "user_data", "thing"
+    [[CREATE INDEX "user_data_thing_idx" ON "user_data" ("thing")]]
+  }
+
+  {
+    -> schema.create_index "user_data", "thing", unique: true
+    [[CREATE UNIQUE INDEX "user_data_thing_idx" ON "user_data" ("thing")]]
+  }
+
+  {
+    -> schema.create_index "user_data", "thing", unique: true, index_name: "good_idx"
+    [[CREATE UNIQUE INDEX "good_idx" ON "user_data" ("thing")]]
+  }
+
+  {
+    -> schema.create_index "user_data", "thing", if_not_exists: true
+    [[CREATE INDEX IF NOT EXISTS "user_data_thing_idx" ON "user_data" ("thing")]]
+  }
+
+  {
+    -> schema.create_index "user_data", "thing", unique: true, where: "age > 100"
+    [[CREATE UNIQUE INDEX "user_data_thing_idx" ON "user_data" ("thing") WHERE age > 100]]
+  }
+
+  {
+    -> schema.create_index "users", "friend_id", tablespace: "farket"
+    [[CREATE INDEX "users_friend_id_idx" ON "users" ("friend_id") TABLESPACE "farket"]]
+  }
+
+  {
+    -> schema.create_index "user_data", "one", "two"
+    [[CREATE INDEX "user_data_one_two_idx" ON "user_data" ("one", "two")]]
+  }
+
+  {
+    -> schema.create_index "user_data", db.raw("lower(name)"), "height"
+    [[CREATE INDEX "user_data_lower_name_height_idx" ON "user_data" (lower(name), "height")]]
   }
 
   {
@@ -315,6 +402,19 @@ tests = {
     [[DROP INDEX IF EXISTS "user_data_one_two_three_idx"]]
   }
 
+  {
+    -> schema.drop_index index_name: "hello_world_idx"
+    [[DROP INDEX IF EXISTS "hello_world_idx"]]
+  }
+  {
+    -> schema.drop_index "user_data", "one", "two", "three", cascade: true
+    [[DROP INDEX IF EXISTS "user_data_one_two_three_idx" CASCADE]]
+  }
+
+  {
+    -> schema.drop_index "users", "height", { index_name: "user_tallness_idx", unique: true }
+    [[DROP INDEX IF EXISTS "user_tallness_idx"]]
+  }
 
   {
     -> db.parse_clause ""
@@ -539,18 +639,96 @@ describe "lapis.db.postgres", ->
       else
         assert.same group[2], output
 
-  it "should create index", ->
-    input = schema.create_index "user_data", "one", "two"
-    assert.same input, [[CREATE INDEX "user_data_one_two_idx" ON "user_data" ("one", "two");]]
 
-  it "should create index with expression", ->
-    input = schema.create_index "user_data", db.raw("lower(name)"), "height"
-    assert.same input, [[CREATE INDEX "user_data_lower_name_height_idx" ON "user_data" (lower(name), "height");]]
+  describe "encode_assigns", ->
+    sorted_pairs!
 
-  it "should create not create duplicate index", ->
-    old_select = db.select
-    db.select = -> { { c: 1 } }
-    input = schema.create_index "user_data", "one", "two", if_not_exists: true
-    assert.same input, nil
-    db.select = old_select
+    it "writes output to buffer", ->
+      buffer = {"hello"}
 
+      -- nothing is returned when using buffer
+      assert.same nil, (db.encode_assigns {
+        one: "two"
+        zone: 55
+        age: db.NULL
+      }, buffer)
+
+
+      assert.same {
+        "hello"
+        '"age"', " = ", "NULL"
+        ", "
+        '"one"', " = ", "'two'"
+        ", "
+        '"zone"', " = ", "55"
+      }, buffer
+
+    it "fails when t is empty, buffer unchanged", ->
+      buffer = {"hello"}
+
+      assert.has_error(
+        -> db.encode_assigns {}, buffer
+        "encode_assigns passed an empty table"
+      )
+
+      assert.same { "hello" }, buffer
+
+  describe "encode_clause", ->
+    sorted_pairs!
+
+    it "writes output to buffer", ->
+      buffer = {"hello"}
+
+      -- nothing is returned when using buffer
+      assert.same nil, (db.encode_clause {
+        hello: "world"
+        lion: db.NULL
+      }, buffer)
+
+      assert.same {
+        "hello"
+        '"hello"', " = ", "'world'"
+        " AND "
+        '"lion"', " IS NULL"
+      }, buffer
+
+    it "fails when t is empty, buffer unchanged", ->
+      buffer = {"hello"}
+
+      assert.has_error(
+        -> db.encode_clause {}, buffer
+        "encode_clause passed an empty table"
+      )
+
+      assert.same { "hello" }, buffer
+
+  describe "encode_values", ->
+    sorted_pairs!
+
+    it "writes output to buffer", ->
+      buffer = {"hello"}
+
+      -- nothing is returned when using buffer
+      assert.same nil, (db.encode_values {
+        hello: "world"
+        lion: db.NULL
+      }, buffer)
+
+      assert.same {
+        "hello"
+        '(',
+        '"hello"', ', ', '"lion"'
+        ') VALUES ('
+        "'world'", ', ', 'NULL'
+        ')'
+      }, buffer
+
+    it "fails when t is empty, buffer unchanged", ->
+      buffer = {"hello"}
+
+      assert.has_error(
+        -> db.encode_values {}, buffer
+        "encode_values passed an empty table"
+      )
+
+      assert.same { "hello" }, buffer

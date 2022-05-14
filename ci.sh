@@ -9,8 +9,8 @@ luarocks --lua-version=5.1 make lapis-dev-1.rockspec
 # add openresty
 export LUA_PATH="$LUA_PATH;/usr/local/openresty/lualib/?.lua"
 
-# setup busted
-cat $(which busted) | sed 's/\/usr\/bin\/lua5\.1/\/usr\/bin\/luajit/' > busted
+# setup busted to run with luajit provided by openresty
+cat $(which busted) | sed 's/\/usr\/bin\/lua5\.1/\/usr\/local\/openresty\/luajit\/bin\/luajit/' > busted
 chmod +x busted
 
 # start postgres
@@ -25,6 +25,9 @@ mkdir -p /run/mysqld
 
 make build
 make test_db
+
+# note we do this after build to give mysql time to fully start
+echo 'ALTER USER root@localhost IDENTIFIED VIA unix_socket OR mysql_native_password USING PASSWORD("")' | mysql -u root
 make mysql_test_db
 
 echo 'user root;' >> spec_openresty/s2/nginx.conf

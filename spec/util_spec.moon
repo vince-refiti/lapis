@@ -434,46 +434,42 @@ describe "lapis.util", ->
     for {plural, single} in *words
       assert.same single, util.singularize plural
 
-describe "lapis.util.mixin", ->
-  it "should mixin mixins", ->
-    import insert from table
-    log = {}
 
-    class Mixin
-      new: =>
-        insert log, "initializing Mixin"
-        @thing = { "hello" }
+describe "lapis.util.utf8", ->
+  it "matches whitespace", ->
+    import whitespace from require "lapis.util.utf8"
 
-      pop: =>
+    assert.nil whitespace\match "h"
+    assert.same 2, whitespace\match " "
+    assert.same 2, whitespace\match "\t"
+    assert.same 2, whitespace\match "\r"
+    assert.same 2, whitespace\match "\n"
 
-      add_one: (num) =>
-        insert log, "Before add_one (Mixin), #{num}"
 
-    class Mixin2
-      new: =>
-        insert log, "initializing Mixin2"
+    assert.same 3, whitespace\match "\194\133"
+    assert.same 4, whitespace\match "\226\128\131"
+    assert.same 4, whitespace\match "\225\154\128"
 
-      add_one: (num) =>
-        insert log, "Before add_one (Mixin2), #{num}"
+    -- direction markers
+    assert.same 4, whitespace\match "\226\128\142"
+    assert.same 4, whitespace\match "\226\128\142\t"
+    assert.nil whitespace\match "\226\128\142h"
 
-    class One
-      util.mixin Mixin
-      util.mixin Mixin2
+    assert.same 3, whitespace\match "\216\156"
+    assert.nil whitespace\match "\216\156f"
 
-      add_one: (num) =>
-        num + 1
+  it "trim utf8 aware", ->
+    import trim from require "lapis.util.utf8"
 
-      new: =>
-        insert log, "initializing One"
+    assert.same "", trim\match ""
+    assert.same "hello", trim\match "hello"
+    assert.same "hello", trim\match "  \n\rhello \t"
 
-    o = One!
-    assert.equal 13, o\add_one(12)
-    assert.same {
-      "initializing One"
-      "initializing Mixin"
-      "initializing Mixin2"
-      "Before add_one (Mixin2), 12"
-      "Before add_one (Mixin), 12"
-    }, log
+    -- direction marker
+    -- TODO: since direction marker counts as character here, it allows
+    -- whitespace between through
+    assert.same "\226\128\142 hello world?", trim\match " \226\128\142 hello world? \t\226\128\141  "
 
+    -- trim should not allow for denial of service, this should run instantly
+    assert.same "hello#{" "\rep 20000}world", trim\match "   hello#{" "\rep 20000}world "
 

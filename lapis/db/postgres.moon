@@ -47,7 +47,14 @@ BACKENDS = {
     local pgmoon_conn
 
     _query = (str) ->
-      pgmoon = ngx and ngx.ctx.pgmoon or pgmoon_conn
+      -- cache the connection in the nginx context if true, otherwise it there
+      -- is one global connection cached for the instantiated backend
+      use_nginx = ngx and ngx.ctx and ngx.socket
+
+      pgmoon = if use_nginx
+        ngx.ctx.pgmoon
+      else
+        pgmoon_conn
 
       unless pgmoon
         import Postgres from require "pgmoon"
@@ -61,16 +68,20 @@ BACKENDS = {
         unless success
           error "postgres failed to connect: #{connect_err}"
 
-        if ngx
+        if config.measure_performance
+          switch pgmoon.sock_type
+            when "nginx"
+              set_perf "pgmoon_conn", "nginx.#{pgmoon.sock\getreusedtimes! > 0 and "reuse" or "new"}"
+            else
+              set_perf "pgmoon_conn", "#{pgmoon.sock_type}.new"
+
+        if use_nginx
           ngx.ctx.pgmoon = pgmoon
           after_dispatch -> pgmoon\keepalive!
         else
           pgmoon_conn = pgmoon
 
       start_time = if config.measure_performance
-        if reused = ngx and pgmoon.sock\getreusedtimes!
-          set_perf "pgmoon_conn", reused > 0 and "reuse" or"new"
-
         unless gettime
           gettime = require("socket").gettime
 
@@ -168,6 +179,8 @@ append_all = (t, ...) ->
   for i=1, select "#", ...
     t[#t + 1] = select i, ...
 
+-- NOTE: this doesn't actually connect, it just configures the backend. This
+-- should be renamed and the interface changed
 connect = ->
   init_logger!
   init_db! -- replaces raw_query to default backend
@@ -189,6 +202,14 @@ query = (str, ...) ->
 _select = (str, ...) ->
   query "SELECT " .. str, ...
 
+-- Appends a list of column names as past of a returning clause via
+-- tail recursion
+-- buff: string fragment buffer to append to
+-- first: is the the first call in series of recursive calls (initial caller should always set this to true
+-- The calling varargs are split into the remaining arguments:
+-- cur: the current value in varags
+-- following: the next value in varargs
+-- ...: remaining arguments
 add_returning = (buff, first, cur, following, ...) ->
   return unless cur
 
@@ -201,7 +222,7 @@ add_returning = (buff, first, cur, following, ...) ->
     append_all buff, ", "
     add_returning buff, false, following, ...
 
-_insert = (tbl, values, ...) ->
+_insert = (tbl, values, opts, ...) ->
   buff = {
     "INSERT INTO "
     escape_identifier(tbl)
@@ -209,8 +230,23 @@ _insert = (tbl, values, ...) ->
   }
   encode_values values, buff
 
-  if ...
-    add_returning buff, true, ...
+  opts_type = type(opts)
+
+  if opts_type == "string" or opts_type == "table" and is_raw(opts)
+    add_returning buff, true, opts, ...
+  elseif opts_type == "table"
+    if opts.on_conflict
+      if opts.on_conflict == "do_nothing"
+        append_all buff, " ON CONFLICT DO NOTHING"
+      else
+        error "db.insert: unsupported value for on_conflict option: #{tostring opts.on_conflict}"
+
+    if r = opts.returning
+      if r == "*"
+        add_returning buff, true, raw "*"
+      else
+        assert type(r) == "table" and not is_raw(r), "db.insert: returning option must be a table array"
+        add_returning buff, true, unpack r
 
   raw_query concat buff
 
