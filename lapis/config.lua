@@ -1,13 +1,14 @@
 local insert
 insert = table.insert
+local CONFIG_MODULE = package.loaded["lapis.config_module_name"] or "config"
 local config_cache, configs, default_config, merge_set, set, scope_meta, config, reset, run_with_scope, get_env, get
 config_cache = { }
 configs = { }
 default_config = {
-  server = "nginx",
   port = "8080",
   secret = "please-change-me",
   session_name = "lapis_session",
+  server = "nginx",
   code_cache = "off",
   num_workers = "1",
   logging = {
@@ -135,9 +136,9 @@ do
     if not (loaded_config) then
       loaded_config = true
       local success, err = pcall(function()
-        return require("config")
+        return require(CONFIG_MODULE)
       end)
-      if not (success or err:match("module 'config' not found")) then
+      if not (success or err:match("module '" .. tostring(CONFIG_MODULE) .. "' not found")) then
         error(err)
       end
     end

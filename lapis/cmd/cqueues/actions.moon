@@ -1,11 +1,19 @@
+unpack = unpack or table.unpack
+
 {
-  new: (flags) =>
-    if @path.exists("config.lua")
-      @fail_with_message "config.lua already exists"
+  new: (args, template_flags) =>
+    valid_install = pcall ->
+      require("cqueues")
+      require("http.version")
 
-    @write_file_safe "config.lua", require "lapis.cmd.cqueues.templates.config"
+    if not valid_install and not args.force
+      @fail_with_message "Unable to load necessary modules for server. Please use LuaRocks to install `cqueues` and `http` modules. You can bypass this error with --force"
 
-  server: (flags, environment) =>
+    @execute {"generate", "config", "--cqueues", unpack template_flags}
+
+  server: (args) =>
+    {:environment} = args
+
     import push, pop from require "lapis.environment"
     import start_server from require "lapis.cmd.cqueues"
 

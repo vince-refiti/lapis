@@ -127,15 +127,47 @@ validate = function(object, validations, opts)
 end
 local assert_valid
 assert_valid = function(object, validations)
+  if type(validations) == "table" and type(validations.transform) == "function" then
+    local result, err_or_state = validations:transform(object)
+    if result == nil and err_or_state then
+      local errors
+      if type(err_or_state) == "string" then
+        errors = {
+          err_or_state
+        }
+      else
+        errors = err_or_state
+      end
+      coroutine.yield("error", errors)
+      error("assert_valid was not captured: " .. tostring(table.concat(errors, ", ")))
+    end
+    return result, err_or_state
+  end
   local errors = validate(object, validations)
   if errors then
     coroutine.yield("error", errors)
     return error("assert_valid was not captured: " .. tostring(table.concat(errors, ", ")))
   end
 end
+local with_params
+with_params = function(params_spec, fn)
+  local types = require("lapis.validate.types")
+  local tableshape = require("tableshape")
+  local t
+  if tableshape.is_type(params_spec) then
+    t = types.assert_error(params_spec)
+  else
+    t = types.params_shape(params_spec):assert_errors()
+  end
+  return function(self, ...)
+    local params, errs_or_state = t:transform(self.params)
+    return fn(self, params, errs_or_state, ...)
+  end
+end
 return {
   validate = validate,
   assert_valid = assert_valid,
   test_input = test_input,
-  validate_functions = validate_functions
+  validate_functions = validate_functions,
+  with_params = with_params
 }

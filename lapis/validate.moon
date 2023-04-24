@@ -1,4 +1,7 @@
 
+-- Note: until tableshape is made a dependency of lapis, do not require it here
+-- on the top level to avoid breaking existing users of these functions
+
 import insert from table
 
 unpack = unpack or table.unpack
@@ -88,9 +91,39 @@ validate = (object, validations, opts={}) ->
   next(errors) and errors
 
 assert_valid = (object, validations) ->
+  -- if validations is like a tableshape checker, call it directly
+  if type(validations) == "table" and type(validations.transform) == "function"
+    result, err_or_state = validations\transform object
+
+    if result == nil and err_or_state
+      errors = if type(err_or_state) == "string"
+        {err_or_state}
+      else
+        err_or_state
+
+      coroutine.yield "error", errors
+      error "assert_valid was not captured: #{table.concat errors, ", "}"
+
+    return result, err_or_state
+
   errors = validate object, validations
   if errors
     coroutine.yield "error", errors
     error "assert_valid was not captured: #{table.concat errors, ", "}"
 
-{ :validate, :assert_valid, :test_input, :validate_functions }
+-- action wrapper that applies validation to params
+with_params = (params_spec, fn) ->
+  types = require "lapis.validate.types"
+  tableshape = require "tableshape"
+
+  t = if tableshape.is_type params_spec
+    types.assert_error params_spec
+  else
+    types.params_shape(params_spec)\assert_errors!
+
+  (...) =>
+    params, errs_or_state = t\transform @params
+    fn @, params, errs_or_state, ...
+
+
+{ :validate, :assert_valid, :test_input, :validate_functions, :with_params }

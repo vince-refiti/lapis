@@ -1,29 +1,39 @@
-local find_nginx, start_nginx, write_config_for, get_pid
-do
-  local _obj_0 = require("lapis.cmd.nginx")
-  find_nginx, start_nginx, write_config_for, get_pid = _obj_0.find_nginx, _obj_0.start_nginx, _obj_0.write_config_for, _obj_0.get_pid
-end
+local unpack = unpack or table.unpack
 return {
-  new = function(self, flags)
-    local config_path, config_path_etlua
-    do
-      local _obj_0 = require("lapis.cmd.nginx").nginx_runner
-      config_path, config_path_etlua = _obj_0.config_path, _obj_0.config_path_etlua
+  new = function(self, args, template_flags)
+    local find_nginx
+    find_nginx = require("lapis.cmd.nginx").find_nginx
+    local nginx = find_nginx()
+    if not nginx and not args.force then
+      self:fail_with_message("Unable to find an OpenResty installation on your system. You can bypass this error with --force or use LAPIS_OPENRESTY environment variable to directly specify the path of the OpenResty binary")
     end
-    if self.path.exists(config_path) or self.path.exists(config_path_etlua) then
-      self:fail_with_message("nginx.conf already exists")
-    end
-    if flags["etlua-config"] then
-      self:write_file_safe(config_path_etlua, require("lapis.cmd.nginx.templates.config_etlua"))
-    else
-      self:write_file_safe(config_path, require("lapis.cmd.nginx.templates.config"))
-    end
-    return self:write_file_safe("mime.types", require("lapis.cmd.nginx.templates.mime_types"))
+    self:execute({
+      "generate",
+      "config",
+      "--nginx",
+      unpack(template_flags)
+    })
+    self:execute({
+      "generate",
+      "nginx.config",
+      args.etlua_config and "--etlua" or nil
+    })
+    return self:execute({
+      "generate",
+      "nginx.mime_types"
+    })
   end,
-  server = function(self, flags, environment)
+  server = function(self, args)
+    local find_nginx, start_nginx, write_config_for
+    do
+      local _obj_0 = require("lapis.cmd.nginx")
+      find_nginx, start_nginx, write_config_for = _obj_0.find_nginx, _obj_0.start_nginx, _obj_0.write_config_for
+    end
+    local environment
+    environment = args.environment
     local nginx = find_nginx()
     if not (nginx) then
-      self:fail_with_message("can not find suitable server installation")
+      self:fail_with_message("Unable to find an OpenResty installation on your system. The LAPIS_OPENRESTY environment variable can be used to directly specify the path of the OpenResty binary")
     end
     write_config_for(environment)
     return start_nginx()

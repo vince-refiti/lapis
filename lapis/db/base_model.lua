@@ -8,17 +8,17 @@ do
   local _obj_0 = table
   insert, concat = _obj_0.insert, _obj_0.concat
 end
-local require, type, setmetatable, rawget, assert, error, next
+local require, type, setmetatable, rawget, assert, error, next, select
 do
   local _obj_0 = _G
-  require, type, setmetatable, rawget, assert, error, next = _obj_0.require, _obj_0.type, _obj_0.setmetatable, _obj_0.rawget, _obj_0.assert, _obj_0.error, _obj_0.next
+  require, type, setmetatable, rawget, assert, error, next, select = _obj_0.require, _obj_0.type, _obj_0.setmetatable, _obj_0.rawget, _obj_0.assert, _obj_0.error, _obj_0.next, _obj_0.select
 end
 local unpack = unpack or table.unpack
 local cjson = require("cjson")
-local add_relations, mark_loaded_relations
+local add_relations, mark_loaded_relations, relation_is_loaded
 do
   local _obj_0 = require("lapis.db.model.relations")
-  add_relations, mark_loaded_relations = _obj_0.add_relations, _obj_0.mark_loaded_relations
+  add_relations, mark_loaded_relations, relation_is_loaded = _obj_0.add_relations, _obj_0.mark_loaded_relations, _obj_0.relation_is_loaded
 end
 local _all_same
 _all_same = function(array, val)
@@ -76,6 +76,36 @@ _fields = function(t, names, k, len)
     return t[names[k]], _fields(t, names, k + 1, len)
   end
 end
+local filter_duplicate_lists
+filter_duplicate_lists = function(db, lists)
+  local seen = { }
+  local out
+  do
+    local _accum_0 = { }
+    local _len_0 = 1
+    for _index_0 = 1, #lists do
+      local _continue_0 = false
+      repeat
+        local list = lists[_index_0]
+        local flat = db.escape_literal(list)
+        if seen[flat] then
+          _continue_0 = true
+          break
+        end
+        seen[flat] = true
+        local _value_0 = list
+        _accum_0[_len_0] = _value_0
+        _len_0 = _len_0 + 1
+        _continue_0 = true
+      until true
+      if not _continue_0 then
+        break
+      end
+    end
+    out = _accum_0
+  end
+  return out
+end
 local Enum
 do
   local _class_0
@@ -119,7 +149,7 @@ do
   _base_0.__class = _class_0
   local self = _class_0
   debug = function(self)
-    return "(contains: " .. tostring(table.concat((function()
+    return "(contains: " .. tostring(concat((function()
       local _accum_0 = { }
       local _len_0 = 1
       for i, v in ipairs(self) do
@@ -184,11 +214,112 @@ do
       end)(), "-")
     end,
     delete = function(self, ...)
-      local res = self.__class.db.delete(self.__class:table_name(), self:_primary_cond(), ...)
+      local cond = self:_primary_cond()
+      local rest_idx = 1
+      if self.__class.db.is_clause((...)) then
+        rest_idx = 2
+        cond = self.__class.db.clause({
+          self.__class.db.clause(cond),
+          (...)
+        })
+      end
+      local res = self.__class.db.delete(self.__class:table_name(), cond, select(rest_idx, ...))
       return (res.affected_rows or 0) > 0, res
     end,
     update = function(self, first, ...)
-      return error("subclass responsibility")
+      local cond = self:_primary_cond()
+      local columns
+      if type(first) == "table" then
+        do
+          local _accum_0 = { }
+          local _len_0 = 1
+          for k, v in pairs(first) do
+            if type(k) == "number" then
+              _accum_0[_len_0] = v
+            else
+              self[k] = v
+              _accum_0[_len_0] = k
+            end
+            _len_0 = _len_0 + 1
+          end
+          columns = _accum_0
+        end
+      else
+        columns = {
+          first,
+          ...
+        }
+      end
+      if next(columns) == nil then
+        return nil, "nothing to update"
+      end
+      if self.__class.constraints then
+        for _, column in pairs(columns) do
+          do
+            local err = self.__class:_check_constraint(column, self[column], self)
+            if err then
+              return nil, err
+            end
+          end
+        end
+      end
+      local values
+      do
+        local _tbl_0 = { }
+        for _index_0 = 1, #columns do
+          local col = columns[_index_0]
+          _tbl_0[col] = self[col]
+        end
+        values = _tbl_0
+      end
+      local nargs = select("#", ...)
+      local last = nargs > 0 and select(nargs, ...)
+      local opts
+      if type(last) == "table" then
+        opts = last
+      end
+      if self.__class.timestamp and not (opts and opts.timestamp == false) then
+        local time = self.__class.db.format_date()
+        values.updated_at = values.updated_at or time
+      end
+      if opts and opts.where then
+        assert(type(opts.where) == "table", "Model.update: where condition must be a table or db.clause")
+        local where
+        if self.__class.db.is_clause(opts.where) then
+          where = opts.where
+        else
+          where = self.__class.db.encode_clause(opts.where)
+        end
+        cond = self.__class.db.clause({
+          self.__class.db.clause(cond),
+          where
+        })
+      end
+      local returning
+      for k, v in pairs(values) do
+        if v == self.__class.db.NULL then
+          self[k] = nil
+        elseif self.__class.db.is_raw(v) then
+          returning = returning or { }
+          table.insert(returning, k)
+        end
+      end
+      local res
+      if returning then
+        res = self.__class.db.update(self.__class:table_name(), values, cond, unpack(returning))
+        do
+          local update = unpack(res)
+          if update then
+            for _index_0 = 1, #returning do
+              local k = returning[_index_0]
+              self[k] = update[k]
+            end
+          end
+        end
+      else
+        res = self.__class.db.update(self.__class:table_name(), values, cond)
+      end
+      return (res.affected_rows or 0) > 0, res
     end,
     refresh = function(self, fields, ...)
       if fields == nil then
@@ -200,7 +331,7 @@ do
           fields,
           ...
         }
-        fields = table.concat((function()
+        fields = concat((function()
           local _accum_0 = { }
           local _len_0 = 1
           for _index_0 = 1, #field_names do
@@ -258,6 +389,7 @@ do
   })
   _base_0.__class = _class_0
   local self = _class_0
+  self.relation_models_module = "models"
   self.db = nil
   self.timestamp = false
   self.primary_key = "id"
@@ -269,8 +401,16 @@ do
       end
     end
   end
-  self.get_relation_model = function(self, name)
-    return require("models")[name]
+  self.get_relation_model = function(self, model_name)
+    local _exp_0 = type(model_name)
+    if "function" == _exp_0 then
+      return model_name()
+    elseif "string" == _exp_0 then
+      return require(self.relation_models_module)[model_name]
+    elseif "table" == _exp_0 then
+      assert(model_name == model_name.__class, "Got an unknown table instead of a model class for relation")
+      return model_name
+    end
   end
   self.primary_keys = function(self)
     if type(self.primary_key) == "table" then
@@ -358,15 +498,6 @@ do
   self.singular_name = function(self)
     return singularize(self:table_name())
   end
-  self.columns = function(self)
-    local columns = self.db.query([[      select column_name, data_type
-      from information_schema.columns
-      where table_name = ?]], self:table_name())
-    self.columns = function()
-      return columns
-    end
-    return columns
-  end
   self.load = function(self, tbl)
     for k, v in pairs(tbl) do
       if ngx and v == ngx.null or v == cjson.null then
@@ -398,7 +529,9 @@ do
         param_count = param_count - 1
       end
     end
-    if type(query) == "table" then
+    if self.db.is_clause(query) then
+      query = "WHERE " .. tostring(self.db.encode_clause(query))
+    elseif type(query) == "table" then
       opts = query
       query = ""
     end
@@ -409,7 +542,7 @@ do
     local load_as = opts and opts.load
     local fields = opts and opts.fields or "*"
     do
-      local res = self.db.select(tostring(fields) .. " from " .. tostring(tbl_name) .. " " .. tostring(query))
+      local res = self.db.select(tostring(fields) .. " FROM " .. tostring(tbl_name) .. " " .. tostring(query))
       if res then
         if load_as == false then
           return res
@@ -424,9 +557,16 @@ do
   end
   self.count = function(self, clause, ...)
     local tbl_name = self.db.escape_identifier(self:table_name())
-    local query = "COUNT(*) as c from " .. tostring(tbl_name)
+    local query = "COUNT(*) AS c FROM " .. tostring(tbl_name)
     if clause then
-      query = query .. (" where " .. self.db.interpolate_query(clause, ...))
+      local _exp_0 = type(clause)
+      if "string" == _exp_0 then
+        query = query .. (" WHERE " .. self.db.interpolate_query(clause, ...))
+      elseif "table" == _exp_0 then
+        query = query .. " WHERE " .. tostring(self.db.encode_clause(clause))
+      else
+        error("Model.count: Got unknown type for filter clause (" .. tostring(type(clause)) .. ")")
+      end
     end
     return unpack(self.db.select(query)).c
   end
@@ -444,11 +584,13 @@ do
     else
       load_rows = true
     end
+    local skip_included = opts and opts.skip_included
+    local for_relation = opts and opts.for_relation
     local source_key, dest_key
     local name_from_table = false
     if type(foreign_key) == "table" then
       if flip then
-        error("flip can not be combined with table foreign key")
+        error("Model.include_in: flip can not be combined with table foreign key")
       end
       name_from_table = true
       source_key = { }
@@ -467,11 +609,24 @@ do
         dest_key = foreign_key
       else
         if type(self.primary_key) == "table" then
-          error(tostring(self:table_name()) .. " must have singular primary key for include_in")
+          error("Model.include_in: " .. tostring(self:table_name()) .. " must have singular primary key for include_in")
         end
         dest_key = self.primary_key
       end
     end
+    local field_name
+    if opts and opts.as then
+      field_name = opts.as
+    elseif flip or name_from_table then
+      if many then
+        field_name = self:table_name()
+      else
+        field_name = self:singular_name()
+      end
+    elseif type(self.primary_key) == "string" then
+      field_name = foreign_key:match("^(.*)_" .. tostring(escape_pattern(self.primary_key)) .. "$")
+    end
+    assert(field_name, "Model.include_in: failed to infer field name, provide one with `as`")
     local composite_foreign_key
     if type(source_key) == "table" then
       if #source_key == 1 and #dest_key == 1 then
@@ -485,14 +640,28 @@ do
       composite_foreign_key = false
     end
     local include_ids
-    if composite_foreign_key then
-      do
-        local _accum_0 = { }
-        local _len_0 = 1
-        for _index_0 = 1, #other_records do
-          local _continue_0 = false
-          repeat
-            local record = other_records[_index_0]
+    do
+      local _accum_0 = { }
+      local _len_0 = 1
+      for _index_0 = 1, #other_records do
+        local _continue_0 = false
+        repeat
+          local record = other_records[_index_0]
+          if skip_included then
+            if for_relation then
+              if relation_is_loaded(record, for_relation) then
+                _continue_0 = true
+                break
+              end
+            else
+              if record[field_name] ~= nil then
+                _continue_0 = true
+                break
+              end
+            end
+          end
+          local _value_0
+          if composite_foreign_key then
             local tuple
             do
               local _accum_1 = { }
@@ -508,71 +677,75 @@ do
               _continue_0 = true
               break
             end
-            local _value_0 = self.db.list(tuple)
-            _accum_0[_len_0] = _value_0
-            _len_0 = _len_0 + 1
-            _continue_0 = true
-          until true
-          if not _continue_0 then
-            break
-          end
-        end
-        include_ids = _accum_0
-      end
-    else
-      do
-        local _accum_0 = { }
-        local _len_0 = 1
-        for _index_0 = 1, #other_records do
-          local _continue_0 = false
-          repeat
-            local record = other_records[_index_0]
+            _value_0 = self.db.list(tuple)
+          else
             do
               local id = record[source_key]
               if not (id) then
                 _continue_0 = true
                 break
               end
-              _accum_0[_len_0] = id
+              _value_0 = id
             end
-            _len_0 = _len_0 + 1
-            _continue_0 = true
-          until true
-          if not _continue_0 then
-            break
           end
+          _accum_0[_len_0] = _value_0
+          _len_0 = _len_0 + 1
+          _continue_0 = true
+        until true
+        if not _continue_0 then
+          break
         end
-        include_ids = _accum_0
       end
+      include_ids = _accum_0
     end
     if next(include_ids) then
-      if not (composite_foreign_key) then
+      if composite_foreign_key then
+        include_ids = filter_duplicate_lists(self.db, include_ids)
+      else
         include_ids = uniquify(include_ids)
       end
-      local flat_ids = self.db.escape_literal(self.db.list(include_ids))
       local find_by_fields
       if composite_foreign_key then
-        find_by_fields = self.db.escape_identifier(self.db.list(dest_key))
+        find_by_fields = self.db.list(dest_key)
       else
-        find_by_fields = self.db.escape_identifier(dest_key)
+        find_by_fields = dest_key
       end
       local tbl_name = self.db.escape_identifier(self:table_name())
-      local query = tostring(fields) .. " from " .. tostring(tbl_name) .. " where " .. tostring(find_by_fields) .. " in " .. tostring(flat_ids)
+      local clause = {
+        [find_by_fields] = self.db.list(include_ids)
+      }
+      local buffer = {
+        fields,
+        " FROM ",
+        tbl_name,
+        " WHERE "
+      }
       if opts and opts.where and next(opts.where) then
-        query = query .. (" and " .. self.db.encode_clause(opts.where))
+        local where = opts.where
+        if not (self.db.is_clause(opts.where)) then
+          where = self.db.clause(where)
+        end
+        clause = self.db.clause({
+          self.db.clause(clause),
+          where
+        })
       end
+      self.db.encode_clause(clause, buffer)
       do
         local group = opts and opts.group
         if group then
-          query = query .. " group by " .. tostring(group)
+          insert(buffer, " GROUP BY ")
+          insert(buffer, group)
         end
       end
       do
         local order = many and opts.order
         if order then
-          query = query .. " order by " .. tostring(order)
+          insert(buffer, " ORDER BY ")
+          insert(buffer, order)
         end
       end
+      local query = concat(buffer)
       do
         local res = self.db.select(query)
         if res then
@@ -600,6 +773,9 @@ do
                 end
               else
                 local t_key = t[dest_key]
+                if not (t_key) then
+                  error("Model.include_in: query returnd a row that is missing the joining field (" .. tostring(tbl_name) .. ": " .. tostring(dest_key) .. ")")
+                end
                 if records[t_key] == nil then
                   records[t_key] = { }
                 end
@@ -613,19 +789,6 @@ do
               end
             end
           end
-          local field_name
-          if opts and opts.as then
-            field_name = opts.as
-          elseif flip or name_from_table then
-            if many then
-              field_name = self:table_name()
-            else
-              field_name = self:singular_name()
-            end
-          elseif type(self.primary_key) == "string" then
-            field_name = foreign_key:match("^(.*)_" .. tostring(escape_pattern(self.primary_key)) .. "$")
-          end
-          assert(field_name, "failed to infer field name, provide one with `as`")
           if composite_foreign_key then
             for _index_0 = 1, #other_records do
               local other = other_records[_index_0]
@@ -643,10 +806,13 @@ do
               end
             end
           end
+          if for_relation then
+            mark_loaded_relations(other_records, for_relation)
+          end
           do
-            local for_relation = opts and opts.for_relation
-            if for_relation then
-              mark_loaded_relations(other_records, for_relation)
+            local callback = opts and opts.loaded_results_callback
+            if callback then
+              callback(res)
             end
           end
         end
@@ -659,25 +825,29 @@ do
       by_key = self.primary_key
     end
     local extra_where, clause, fields
-    if type(by_key) == "table" then
+    if type(by_key) == "table" and not self.__class.db.is_encodable(by_key) then
       fields = by_key.fields or fields
       extra_where = by_key.where
       clause = by_key.clause
       by_key = by_key.key or self.primary_key
     end
-    if type(by_key) == "table" and by_key[1] ~= "raw" then
-      error(tostring(self:table_name()) .. " find_all must have a singular key to search")
+    if type(by_key) == "table" and not self.__class.db.is_raw(by_key) then
+      error("Model.find_all: (" .. tostring(self:table_name()) .. ") Must have a singular key to search")
     end
     if #ids == 0 then
       return { }
     end
-    self.db.list(ids)
     local where = {
       [by_key] = self.db.list(ids)
     }
     if extra_where then
-      for k, v in pairs(extra_where) do
-        where[k] = v
+      if self.db.is_clause(extra_where) then
+        table.insert(where, extra_where)
+        where = self.db.clause(where)
+      else
+        for k, v in pairs(extra_where) do
+          where[k] = v
+        end
       end
     end
     local query = "WHERE " .. self.db.encode_clause(where)
@@ -695,7 +865,7 @@ do
   self.find = function(self, ...)
     local first = select(1, ...)
     if first == nil then
-      error(tostring(self:table_name()) .. " trying to find with no conditions")
+      error("Model.find: " .. tostring(self:table_name()) .. ": trying to find with no conditions")
     end
     local cond
     if "table" == type(first) then
@@ -705,7 +875,7 @@ do
     end
     local table_name = self.db.escape_identifier(self:table_name())
     do
-      local result = unpack(self.db.select("* from " .. tostring(table_name) .. " where " .. tostring(cond) .. " limit 1"))
+      local result = unpack(self.db.select("* FROM " .. tostring(table_name) .. " WHERE " .. tostring(cond) .. " LIMIT 1"))
       if result then
         return self:load(result)
       else
@@ -714,7 +884,84 @@ do
     end
   end
   self.create = function(self, values, opts)
-    return error("subclass responsibility")
+    if self.constraints then
+      for key in pairs(self.constraints) do
+        do
+          local err = self:_check_constraint(key, values and values[key], values)
+          if err then
+            return nil, err
+          end
+        end
+      end
+    end
+    if self.timestamp then
+      local time = self.db.format_date()
+      values.created_at = values.created_at or time
+      values.updated_at = values.updated_at or time
+    end
+    local returning, return_all, nil_fields
+    if opts and opts.returning then
+      if opts.returning == "*" then
+        return_all = true
+        returning = {
+          self.db.raw("*")
+        }
+      else
+        returning = {
+          self:primary_keys()
+        }
+        local _list_0 = opts.returning
+        for _index_0 = 1, #_list_0 do
+          local field = _list_0[_index_0]
+          table.insert(returning, field)
+        end
+      end
+    end
+    for k, v in pairs(values) do
+      local _continue_0 = false
+      repeat
+        if v == self.db.NULL then
+          nil_fields = nil_fields or { }
+          nil_fields[k] = true
+          _continue_0 = true
+          break
+        elseif not return_all and self.db.is_raw(v) then
+          returning = returning or {
+            self:primary_keys()
+          }
+          table.insert(returning, k)
+        end
+        _continue_0 = true
+      until true
+      if not _continue_0 then
+        break
+      end
+    end
+    local res
+    if returning then
+      res = self.db.insert(self:table_name(), values, unpack(returning))
+    else
+      res = self.db.insert(self:table_name(), values, self:primary_keys())
+    end
+    if res then
+      if returning and not return_all then
+        for _index_0 = 1, #returning do
+          local k = returning[_index_0]
+          values[k] = res[1][k]
+        end
+      end
+      for k, v in pairs(res[1]) do
+        values[k] = v
+      end
+      if nil_fields then
+        for k in pairs(nil_fields) do
+          values[k] = nil
+        end
+      end
+      return self:load(values)
+    else
+      return nil, "Failed to create " .. tostring(self.__name)
+    end
   end
   self.check_unique_constraint = function(self, name, value)
     local t
@@ -785,7 +1032,7 @@ do
       "constraints",
       "relations"
     }
-    return lua.class(table_name, tbl, self, function(cls)
+    local cls = lua.class(table_name, tbl, self, function(cls)
       cls.table_name = function()
         return table_name
       end
@@ -795,6 +1042,7 @@ do
         cls.__base[f] = nil
       end
     end)
+    return cls, cls.__base
   end
   BaseModel = _class_0
 end

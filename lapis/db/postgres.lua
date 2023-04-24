@@ -7,12 +7,12 @@ do
 end
 local unpack = unpack or table.unpack
 local raw_query, raw_disconnect
-local logger
-local FALSE, NULL, TRUE, build_helpers, format_date, is_raw, raw, is_list, list, is_encodable
+local FALSE, NULL, TRUE, build_helpers, format_date, is_raw, raw, is_list, list, is_clause, clause, is_encodable
 do
   local _obj_0 = require("lapis.db.base")
-  FALSE, NULL, TRUE, build_helpers, format_date, is_raw, raw, is_list, list, is_encodable = _obj_0.FALSE, _obj_0.NULL, _obj_0.TRUE, _obj_0.build_helpers, _obj_0.format_date, _obj_0.is_raw, _obj_0.raw, _obj_0.is_list, _obj_0.list, _obj_0.is_encodable
+  FALSE, NULL, TRUE, build_helpers, format_date, is_raw, raw, is_list, list, is_clause, clause, is_encodable = _obj_0.FALSE, _obj_0.NULL, _obj_0.TRUE, _obj_0.build_helpers, _obj_0.format_date, _obj_0.is_raw, _obj_0.raw, _obj_0.is_list, _obj_0.list, _obj_0.is_clause, _obj_0.clause, _obj_0.is_encodable
 end
+local logger = require("lapis.logging")
 local array
 array = function(t)
   local PostgresArray
@@ -37,9 +37,6 @@ _is_encodable = function(item)
 end
 local gettime
 local BACKENDS = {
-  raw = function(fn)
-    return fn
-  end,
   pgmoon = function()
     local after_dispatch, increment_perf, set_perf
     do
@@ -49,6 +46,10 @@ local BACKENDS = {
     local config = require("lapis.config").get()
     local pg_config = assert(config.postgres, "missing postgres configuration")
     local pgmoon_conn
+    local measure_performance = not not config.measure_performance
+    if measure_performance then
+      gettime = require("socket").gettime
+    end
     local _query
     _query = function(str)
       local use_nginx = ngx and ngx.ctx and ngx.socket
@@ -70,7 +71,7 @@ local BACKENDS = {
         if not (success) then
           error("postgres failed to connect: " .. tostring(connect_err))
         end
-        if config.measure_performance then
+        if measure_performance then
           local _exp_0 = pgmoon.sock_type
           if "nginx" == _exp_0 then
             set_perf("pgmoon_conn", "nginx." .. tostring(pgmoon.sock:getreusedtimes() > 0 and "reuse" or "new"))
@@ -88,10 +89,7 @@ local BACKENDS = {
         end
       end
       local start_time
-      if config.measure_performance then
-        if not (gettime) then
-          gettime = require("socket").gettime
-        end
+      if measure_performance then
         start_time = gettime()
       end
       local res, err = pgmoon:query(str)
@@ -99,13 +97,9 @@ local BACKENDS = {
         local dt = gettime() - start_time
         increment_perf("db_time", dt)
         increment_perf("db_count", 1)
-        if logger then
-          logger.query(str, dt)
-        end
+        logger.query(str, dt)
       else
-        if logger then
-          logger.query(str)
-        end
+        logger.query(str)
       end
       if not res and err then
         error(tostring(str) .. "\n" .. tostring(err))
@@ -124,14 +118,6 @@ local BACKENDS = {
     return _query, _disconnect
   end
 }
-local set_backend
-set_backend = function(name, ...)
-  local backend = BACKENDS[name]
-  if not (backend) then
-    error("Failed to find PostgreSQL backend: " .. tostring(name))
-  end
-  raw_query, raw_disconnect = backend(...)
-end
 local set_raw_query
 set_raw_query = function(fn)
   raw_query = fn
@@ -139,27 +125,6 @@ end
 local get_raw_query
 get_raw_query = function()
   return raw_query
-end
-local init_logger
-init_logger = function()
-  logger = require("lapis.logging")
-end
-local set_logger
-set_logger = function(_logger)
-  logger = _logger
-end
-local get_logger
-get_logger = function()
-  return logger
-end
-local init_db
-init_db = function()
-  local config = require("lapis.config").get()
-  local backend = config.postgres and config.postgres.backend
-  if not (backend) then
-    backend = "pgmoon"
-  end
-  return set_backend(backend)
 end
 local escape_identifier
 escape_identifier = function(ident)
@@ -235,8 +200,16 @@ append_all = function(t, ...)
 end
 local connect
 connect = function()
-  init_logger()
-  return init_db()
+  local config = require("lapis.config").get()
+  local backend_name = config.postgres and config.postgres.backend
+  if not (backend_name) then
+    backend_name = "pgmoon"
+  end
+  local backend = BACKENDS[backend_name]
+  if not (backend) then
+    error("Failed to find PostgreSQL backend: " .. tostring(backend_name))
+  end
+  raw_query, raw_disconnect = backend()
 end
 local disconnect
 disconnect = function()
@@ -362,99 +335,6 @@ _truncate = function(...)
   end)(...), ", ")
   return raw_query("TRUNCATE " .. tables .. " RESTART IDENTITY")
 end
-local parse_clause
-do
-  local grammar
-  local make_grammar
-  make_grammar = function()
-    local basic_keywords = {
-      "where",
-      "having",
-      "limit",
-      "offset"
-    }
-    local P, R, C, S, Cmt, Ct, Cg, V
-    do
-      local _obj_0 = require("lpeg")
-      P, R, C, S, Cmt, Ct, Cg, V = _obj_0.P, _obj_0.R, _obj_0.C, _obj_0.S, _obj_0.Cmt, _obj_0.Ct, _obj_0.Cg, _obj_0.V
-    end
-    local alpha = R("az", "AZ", "__")
-    local alpha_num = alpha + R("09")
-    local white = S(" \t\r\n") ^ 0
-    local some_white = S(" \t\r\n") ^ 1
-    local word = alpha_num ^ 1
-    local single_string = P("'") * (P("''") + (P(1) - P("'"))) ^ 0 * P("'")
-    local double_string = P('"') * (P('""') + (P(1) - P('"'))) ^ 0 * P('"')
-    local strings = single_string + double_string
-    local ci
-    ci = function(str)
-      S = require("lpeg").S
-      local p
-      for c in str:gmatch(".") do
-        local char = S(tostring(c:lower()) .. tostring(c:upper()))
-        if p then
-          p = p * char
-        else
-          p = char
-        end
-      end
-      return p * -alpha_num
-    end
-    local balanced_parens = P({
-      P("(") * (V(1) + strings + (P(1) - ")")) ^ 0 * P(")")
-    })
-    local order_by = ci("order") * some_white * ci("by") / "order"
-    local group_by = ci("group") * some_white * ci("by") / "group"
-    local keyword = order_by + group_by
-    for _index_0 = 1, #basic_keywords do
-      local k = basic_keywords[_index_0]
-      local part = ci(k) / k
-      keyword = keyword + part
-    end
-    keyword = keyword * white
-    local clause_content = (balanced_parens + strings + (word + P(1) - keyword)) ^ 1
-    local outer_join_type = (ci("left") + ci("right") + ci("full")) * (white * ci("outer")) ^ -1
-    local join_type = (ci("natural") * white) ^ -1 * ((ci("inner") + outer_join_type) * white) ^ -1
-    local start_join = join_type * ci("join")
-    local join_body = (balanced_parens + strings + (P(1) - start_join - keyword)) ^ 1
-    local join_tuple = Ct(C(start_join) * C(join_body))
-    local joins = (#start_join * Ct(join_tuple ^ 1)) / function(joins)
-      return {
-        "join",
-        joins
-      }
-    end
-    local clause = Ct((keyword * C(clause_content)))
-    grammar = white * Ct(joins ^ -1 * clause ^ 0)
-  end
-  parse_clause = function(clause)
-    if clause == "" then
-      return { }
-    end
-    if not (grammar) then
-      make_grammar()
-    end
-    local parsed
-    do
-      local tuples = grammar:match(clause)
-      if tuples then
-        do
-          local _tbl_0 = { }
-          for _index_0 = 1, #tuples do
-            local t = tuples[_index_0]
-            local _key_0, _val_0 = unpack(t)
-            _tbl_0[_key_0] = _val_0
-          end
-          parsed = _tbl_0
-        end
-      end
-    end
-    if not parsed or (not next(parsed) and not clause:match("^%s*$")) then
-      return nil, "failed to parse clause: `" .. tostring(clause) .. "`"
-    end
-    return parsed
-  end
-end
 local encode_case
 encode_case = function(exp, t, on_else)
   local buff = {
@@ -471,6 +351,7 @@ encode_case = function(exp, t, on_else)
   return concat(buff)
 end
 return {
+  __type = "postgres",
   connect = connect,
   disconnect = disconnect,
   query = query,
@@ -480,6 +361,8 @@ return {
   is_list = is_list,
   array = array,
   is_array = is_array,
+  clause = clause,
+  is_clause = is_clause,
   NULL = NULL,
   TRUE = TRUE,
   FALSE = FALSE,
@@ -489,19 +372,16 @@ return {
   encode_assigns = encode_assigns,
   encode_clause = encode_clause,
   interpolate_query = interpolate_query,
-  parse_clause = parse_clause,
   format_date = format_date,
   encode_case = encode_case,
-  init_logger = init_logger,
-  set_backend = set_backend,
   set_raw_query = set_raw_query,
   get_raw_query = get_raw_query,
-  get_logger = get_logger,
-  set_logger = set_logger,
+  parse_clause = require("lapis.db.postgres.parse_clause"),
   select = _select,
   insert = _insert,
   update = _update,
   delete = _delete,
   truncate = _truncate,
-  is_encodable = _is_encodable
+  is_encodable = _is_encodable,
+  BACKENDS = BACKENDS
 }

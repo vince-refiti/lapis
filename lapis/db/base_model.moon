@@ -1,13 +1,13 @@
 import underscore, escape_pattern, uniquify, singularize from require "lapis.util"
 import insert, concat from table
 
-import require, type, setmetatable, rawget, assert, error, next from _G
+import require, type, setmetatable, rawget, assert, error, next, select from _G
 
 unpack = unpack or table.unpack
 
 cjson = require "cjson"
 
-import add_relations, mark_loaded_relations from require "lapis.db.model.relations"
+import add_relations, mark_loaded_relations, relation_is_loaded from require "lapis.db.model.relations"
 
 _all_same = (array, val) ->
   for item in *array
@@ -46,9 +46,19 @@ _fields = (t, names, k=1, len=#names) ->
   else
     t[names[k]], _fields(t, names, k + 1, len)
 
+filter_duplicate_lists = (db, lists) ->
+  seen = {}
+  out = for list in *lists
+    flat = db.escape_literal list
+    continue if seen[flat]
+    seen[flat] = true
+    list
+
+  out
+
 class Enum
   debug = =>
-    "(contains: #{table.concat ["#{i}:#{v}" for i, v in ipairs @], ", "})"
+    "(contains: #{concat ["#{i}:#{v}" for i, v in ipairs @], ", "})"
 
   -- convert string to number, or let number pass through
   for_db: (key) =>
@@ -79,6 +89,7 @@ enum = (tbl) ->
   setmetatable tbl, Enum.__base
 
 class BaseModel
+  @relation_models_module: "models"
   @db: nil -- set in implementing class
 
   @timestamp: false
@@ -88,8 +99,17 @@ class BaseModel
     if r = rawget child, "relations"
       add_relations child, r, @db
 
-  @get_relation_model: (name) =>
-    require("models")[name]
+  @get_relation_model: (model_name) =>
+    switch type model_name
+      when "function"
+        model_name!
+      when "string"
+        require(@relation_models_module)[model_name]
+      when "table" -- probably already a relation model class
+        assert model_name == model_name.__class,
+          "Got an unknown table instead of a model class for relation"
+
+        model_name
 
   @primary_keys: =>
     if type(@primary_key) == "table"
@@ -129,15 +149,6 @@ class BaseModel
   @singular_name: =>
     singularize @table_name!
 
-  @columns: =>
-    columns = @db.query [[
-      select column_name, data_type
-      from information_schema.columns
-      where table_name = ?]], @table_name!
-
-    @columns = -> columns
-    columns
-
   @load: (tbl) =>
     for k,v in pairs tbl
       -- clear null values
@@ -163,8 +174,9 @@ class BaseModel
         opts = last
         param_count -= 1
 
-
-    if type(query) == "table"
+    if @db.is_clause query
+      query = "WHERE #{@db.encode_clause query}"
+    elseif type(query) == "table"
       opts = query
       query = ""
 
@@ -176,7 +188,7 @@ class BaseModel
     load_as = opts and opts.load
     fields = opts and opts.fields or "*"
 
-    if res = @db.select "#{fields} from #{tbl_name} #{query}"
+    if res = @db.select "#{fields} FROM #{tbl_name} #{query}"
       return res if load_as == false
       if load_as
         load_as\load_all res
@@ -185,14 +197,20 @@ class BaseModel
 
   @count: (clause, ...) =>
     tbl_name = @db.escape_identifier @table_name!
-    query = "COUNT(*) as c from #{tbl_name}"
+    query = "COUNT(*) AS c FROM #{tbl_name}"
 
     if clause
-      query ..= " where " .. @db.interpolate_query clause, ...
+      switch type clause
+        when "string"
+          query ..= " WHERE " .. @db.interpolate_query clause, ...
+        when "table"
+          query ..= " WHERE #{@db.encode_clause clause}"
+        else
+          error "Model.count: Got unknown type for filter clause (#{type clause})"
 
     unpack(@db.select query).c
 
-
+  -- NOTE: flip & local_key are deprecated
   -- include references to this model in a list of records based on a foreign
   -- key
   -- Examples:
@@ -220,6 +238,8 @@ class BaseModel
     many = opts and opts.many
     value_fn = opts and opts.value
     load_rows = if opts and opts.load == false then false else true
+    skip_included = opts and opts.skip_included
+    for_relation = opts and opts.for_relation
 
     -- source_key fields on the model to fetch
     -- dest_key fields on the records we have (other_records)
@@ -229,7 +249,7 @@ class BaseModel
 
     if type(foreign_key) == "table"
       if flip
-        error "flip can not be combined with table foreign key"
+        error "Model.include_in: flip can not be combined with table foreign key"
 
       name_from_table = true
 
@@ -251,9 +271,22 @@ class BaseModel
         foreign_key
       else
         if type(@primary_key) == "table"
-          error "#{@table_name!} must have singular primary key for include_in"
+          error "Model.include_in: #{@table_name!} must have singular primary key for include_in"
 
         @primary_key
+
+    -- the field name on the other_records to set the associated object to
+    field_name = if opts and opts.as
+      opts.as
+    elseif flip or name_from_table
+      if many
+        @table_name!
+      else
+        @singular_name!
+    elseif type(@primary_key) == "string"
+      foreign_key\match "^(.*)_#{escape_pattern(@primary_key)}$"
+
+    assert field_name, "Model.include_in: failed to infer field name, provide one with `as`"
 
     composite_foreign_key = if type(source_key) == "table"
       if #source_key == 1 and #dest_key == 1
@@ -265,38 +298,68 @@ class BaseModel
     else
       false
 
-    include_ids = if composite_foreign_key
-      for record in *other_records
+    include_ids = for record in *other_records
+      if skip_included
+        if for_relation
+          continue if relation_is_loaded record, for_relation
+        else
+          continue if record[field_name] != nil
+
+      if composite_foreign_key
         tuple = [record[k] or @db.NULL for k in *source_key]
         continue if _all_same tuple, @db.NULL
         @db.list tuple
-    else
-      for record in *other_records
+      else
         with id = record[source_key]
           continue unless id
 
     if next include_ids
-      unless composite_foreign_key
+      if composite_foreign_key
+        include_ids = filter_duplicate_lists @db, include_ids
+      else
         include_ids = uniquify include_ids
 
-      flat_ids = @db.escape_literal @db.list include_ids
-
       find_by_fields = if composite_foreign_key
-        @db.escape_identifier @db.list dest_key
+        @db.list dest_key
       else
-        @db.escape_identifier dest_key
+        dest_key
 
       tbl_name = @db.escape_identifier @table_name!
-      query = "#{fields} from #{tbl_name} where #{find_by_fields} in #{flat_ids}"
+
+      -- the list of objects to find
+      clause = {
+        [find_by_fields]: @db.list include_ids
+      }
+
+      buffer = {
+        fields
+        " FROM "
+        tbl_name
+        " WHERE "
+      }
 
       if opts and opts.where and next opts.where
-        query ..= " and " .. @db.encode_clause opts.where
+        where = opts.where
+
+        unless @db.is_clause opts.where
+          where = @db.clause where
+
+        clause = @db.clause {
+          @db.clause clause
+          where
+        }
+
+      @db.encode_clause clause, buffer
 
       if group = opts and opts.group
-        query ..= " group by #{group}"
+        insert buffer, " GROUP BY "
+        insert buffer, group
 
       if order = many and opts.order
-        query ..= " order by #{order}"
+        insert buffer, " ORDER BY "
+        insert buffer, order
+
+      query = concat buffer
 
       if res = @db.select query
         -- holds all the fetched rows indexed by the dest_key (what was searched by)
@@ -323,6 +386,8 @@ class BaseModel
 
             else
               t_key = t[dest_key]
+              unless t_key
+                error "Model.include_in: query returnd a row that is missing the joining field (#{tbl_name}: #{dest_key})"
 
               if records[t_key] == nil
                 records[t_key] = {}
@@ -335,17 +400,6 @@ class BaseModel
             else
               records[t[dest_key]] = row
 
-        field_name = if opts and opts.as
-          opts.as
-        elseif flip or name_from_table
-          if many
-            @table_name!
-          else
-            @singular_name!
-        elseif type(@primary_key) == "string"
-          foreign_key\match "^(.*)_#{escape_pattern(@primary_key)}$"
-
-        assert field_name, "failed to infer field name, provide one with `as`"
 
         -- load the rows into we feteched into the models
         if composite_foreign_key
@@ -361,8 +415,11 @@ class BaseModel
             if many and not other[field_name]
               other[field_name] = {}
 
-        if for_relation = opts and opts.for_relation
+        if for_relation
           mark_loaded_relations other_records, for_relation
+
+        if callback = opts and opts.loaded_results_callback
+          callback res
 
     other_records
 
@@ -370,22 +427,26 @@ class BaseModel
     local extra_where, clause, fields
 
     -- parse opts
-    if type(by_key) == "table"
+    if type(by_key) == "table" and not @@db.is_encodable by_key
       fields = by_key.fields or fields
       extra_where = by_key.where
       clause = by_key.clause
       by_key = by_key.key or @primary_key
 
-    if type(by_key) == "table" and by_key[1] != "raw"
-      error "#{@table_name!} find_all must have a singular key to search"
+    -- TODO: we can support composite keys here
+    if type(by_key) == "table" and not @@db.is_raw by_key
+      error "Model.find_all: (#{@table_name!}) Must have a singular key to search"
 
     return {} if #ids == 0
 
-    @db.list ids
     where = { [by_key]: @db.list ids }
     if extra_where
-      for k,v in pairs extra_where
-        where[k] = v
+      if @db.is_clause extra_where
+        table.insert where, extra_where
+        where = @db.clause where
+      else
+        for k,v in pairs extra_where
+          where[k] = v
 
     query = "WHERE " .. @db.encode_clause where
 
@@ -401,7 +462,8 @@ class BaseModel
   -- find by primary key, or by table of conds
   @find: (...) =>
     first = select 1, ...
-    error "#{@table_name!} trying to find with no conditions" if first == nil
+    if first == nil
+      error "Model.find: #{@table_name!}: trying to find with no conditions"
 
     cond = if "table" == type first
       @db.encode_clause (...)
@@ -410,14 +472,64 @@ class BaseModel
 
     table_name = @db.escape_identifier @table_name!
 
-    if result = unpack @db.select "* from #{table_name} where #{cond} limit 1"
+    if result = unpack @db.select "* FROM #{table_name} WHERE #{cond} LIMIT 1"
       @load result
     else
     	nil
 
   -- create from table of values, return loaded object
+  -- NOTE: this implementation depends on support for RETURNING sql synax
   @create: (values, opts) =>
-    error "subclass responsibility"
+    if @constraints
+      for key in pairs @constraints
+        if err = @_check_constraint key, values and values[key], values
+          return nil, err
+
+    if @timestamp
+      time = @db.format_date!
+      values.created_at or= time
+      values.updated_at or= time
+
+    local returning, return_all, nil_fields
+
+    if opts and opts.returning
+      if opts.returning == "*"
+        return_all = true
+        returning = { @db.raw "*" }
+      else
+        returning = { @primary_keys! }
+        for field in *opts.returning
+          table.insert returning, field
+
+    for k, v in pairs values
+      if v == @db.NULL
+        nil_fields or= {}
+        nil_fields[k] = true
+        continue
+      elseif not return_all and @db.is_raw v
+        returning or= {@primary_keys!}
+        table.insert returning, k
+
+    res = if returning
+      @db.insert @table_name!, values, unpack returning
+    else
+      @db.insert @table_name!, values, @primary_keys!
+
+    if res
+      if returning and not return_all
+        for k in *returning
+          values[k] = res[1][k]
+
+      for k,v in pairs res[1]
+        values[k] = v
+
+      if nil_fields
+        for k in pairs nil_fields
+          values[k] = nil
+
+      @load values
+    else
+      nil, "Failed to create #{@__name}"
 
   -- returns true if something is using the cond
   @check_unique_constraint: (name, value) =>
@@ -456,7 +568,6 @@ class BaseModel
       import OffsetPaginator from require "lapis.db.pagination"
       OffsetPaginator @, ...
 
-  -- alternative to MoonScript inheritance
   @extend: (table_name, tbl={}) =>
     lua = require "lapis.lua"
 
@@ -464,11 +575,13 @@ class BaseModel
       "primary_key", "timestamp", "constraints", "relations"
     }
 
-    lua.class table_name, tbl, @, (cls) ->
+    cls = lua.class table_name, tbl, @, (cls) ->
       cls.table_name = -> table_name
       for f in *class_fields
         cls[f] = tbl[f]
         cls.__base[f] = nil
+
+    cls, cls.__base
 
   _primary_cond: =>
     cond = {}
@@ -483,7 +596,19 @@ class BaseModel
   url_key: => concat [@[key] for key in *{@@primary_keys!}], "-"
 
   delete: (...) =>
-    res = @@db.delete @@table_name!, @_primary_cond!, ...
+    cond = @_primary_cond!
+
+    rest_idx = 1
+
+    if @@db.is_clause (...)
+      rest_idx = 2
+      cond = @@db.clause {
+        @@db.clause cond
+        (...)
+      }
+
+    res = @@db.delete @@table_name!, cond, select rest_idx, ...
+
     (res.affected_rows or 0) > 0, res
 
   -- thing\update "col1", "col2", "col3"
@@ -491,8 +616,72 @@ class BaseModel
   --   "col1", "col2"
   --   col3: "Hello"
   -- }
+  -- NOTE: this implementation depends on support for RETURNING sql synax
   update: (first, ...) =>
-    error "subclass responsibility"
+    cond = @_primary_cond!
+
+    columns = if type(first) == "table"
+      for k,v in pairs first
+        if type(k) == "number"
+          v
+        else
+          @[k] = v
+          k
+    else
+      {first, ...}
+
+    return nil, "nothing to update" if next(columns) == nil
+
+    if @@constraints
+      for _, column in pairs columns
+        if err = @@_check_constraint column, @[column], @
+          return nil, err
+
+    values = { col, @[col] for col in *columns }
+
+    -- update options
+    nargs = select "#", ...
+    last = nargs > 0 and select nargs, ...
+
+    opts = if type(last) == "table" then last
+
+    if @@timestamp and not (opts and opts.timestamp == false)
+      time = @@db.format_date!
+      values.updated_at or= time
+
+    if opts and opts.where
+      assert type(opts.where) == "table", "Model.update: where condition must be a table or db.clause"
+
+      where = if @@db.is_clause opts.where
+        opts.where
+      else
+        @@db.encode_clause opts.where
+
+      cond = @@db.clause {
+        @@db.clause cond
+        where
+      }
+
+    local returning
+    for k, v in pairs values
+      if v == @@db.NULL
+        @[k] = nil
+      elseif @@db.is_raw(v)
+        returning or= {}
+        table.insert returning, k
+
+    local res
+
+    if returning
+      res = @@db.update @@table_name!, values, cond, unpack returning
+      if update = unpack res
+        for k in *returning
+          @[k] = update[k]
+    else
+      res = @@db.update @@table_name!, values, cond
+
+    (res.affected_rows or 0) > 0, res
+
 
   -- reload fields on the instance
   refresh: (fields="*", ...) =>
@@ -500,7 +689,7 @@ class BaseModel
 
     if fields != "*"
       field_names = {fields, ...}
-      fields = table.concat [@@db.escape_identifier f for f in *field_names], ", "
+      fields = concat [@@db.escape_identifier f for f in *field_names], ", "
 
     cond = @@db.encode_clause @_primary_cond!
     tbl_name = @@db.escape_identifier @@table_name!

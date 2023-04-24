@@ -47,24 +47,116 @@ describe "lapis.db.model", ->
     -- doesn't try to interpolate with no params
     Things\select "where color = '?'"
 
+
     assert_queries {
-      'SELECT * from "things" '
-      'SELECT * from "things" where id = 1234'
-      'SELECT hello from "things" '
-      'SELECT hello, world from "things" where id = 1234'
-      [[SELECT * from "things" where color = '?']]
+      'SELECT * FROM "things" '
+      'SELECT * FROM "things" where id = 1234'
+      'SELECT hello FROM "things" '
+      'SELECT hello, world FROM "things" where id = 1234'
+      [[SELECT * FROM "things" where color = '?']]
     }
 
+  it "selects with db.clause", ->
+    class Things extends Model
+
+    Things\select db.clause {
+      id: 999
+    }
+
+    Things\select db.clause({
+      id: 999
+    }), fields: "one, two"
+
+    Things\select db.clause {
+      id: 1289
+    }
+
+    Things\select(
+      "inner join dogs on ? where ?"
+      db.clause { id: db.raw "thing_id "}, table_name: "things"
+      db.clause { height: 10 }, table_name: "dogs"
+    )
+
+    Things\select db.clause {
+      one: true
+      two: true
+    }, operator: "OR"
+
+    assert_queries {
+      [[SELECT * FROM "things" WHERE "id" = 999]]
+      [[SELECT one, two FROM "things" WHERE "id" = 999]]
+      [[SELECT * FROM "things" WHERE "id" = 1289]]
+      [[SELECT * FROM "things" inner join dogs on "things"."id" = thing_id where "dogs"."height" = 10]]
+      [[SELECT * FROM "things" WHERE "one" OR "two"]]
+    }
+
+  it "should count", ->
+    mock_query "COUNT%(%*%)", {{ c: 127 }}
+
+    class Things extends Model
+
+    -- meh, this can't do things like inner join, it should have been designed to work like select where you must write "where" yourself
+    Things\count!
+    Things\count "not deleted"
+    Things\count "views > ?", 100
+
+    Things\count db.clause {
+      status: "promoted"
+    }
+
+    Things\count db.clause {
+      alpha: true
+      beta: true
+    }, operator: "OR"
+
+    assert_queries {
+      [[SELECT COUNT(*) AS c FROM "things"]]
+      [[SELECT COUNT(*) AS c FROM "things" WHERE not deleted]]
+      [[SELECT COUNT(*) AS c FROM "things" WHERE views > 100]]
+      [[SELECT COUNT(*) AS c FROM "things" WHERE "status" = 'promoted']]
+      [[SELECT COUNT(*) AS c FROM "things" WHERE "alpha" OR "beta"]]
+    }
+
+
   describe "find", ->
+    it "handles empty clause", ->
+      class Things extends Model
+
+      assert.has_error(
+        -> Things\find {}
+        "db.encode_clause: passed an empty table"
+      )
+
+      assert.has_error(
+        -> Things\find nil
+        "Model.find: things: trying to find with no conditions"
+      )
+
+      assert.has_error(
+        -> Things\find!
+        "Model.find: things: trying to find with no conditions"
+      )
+
+
     it "basic", ->
       class Things extends Model
 
       Things\find "hello"
       Things\find cat: true, weight: 120
+      Things\find db.clause {
+        age: 11
+      }
+
+      Things\find db.clause {
+        deleted: true
+        status: "deleted"
+      }, operator: "OR"
 
       assert_queries {
-        [[SELECT * from "things" where "id" = 'hello' limit 1]]
-        [[SELECT * from "things" where "cat" = TRUE AND "weight" = 120 limit 1]]
+        [[SELECT * FROM "things" WHERE "id" = 'hello' LIMIT 1]]
+        [[SELECT * FROM "things" WHERE "cat" = TRUE AND "weight" = 120 LIMIT 1]]
+        [[SELECT * FROM "things" WHERE "age" = 11 LIMIT 1]]
+        [[SELECT * FROM "things" WHERE "deleted" OR "status" = 'deleted' LIMIT 1]]
       }
 
     it "composite primary key", ->
@@ -73,7 +165,7 @@ describe "lapis.db.model", ->
 
       Things2\find 1,2
       assert_queries {
-        [[SELECT * from "things" where "hello" = 1 AND "world" = 2 limit 1]]
+        [[SELECT * FROM "things" WHERE "hello" = 1 AND "world" = 2 LIMIT 1]]
       }
 
   describe "find_all", ->
@@ -84,14 +176,42 @@ describe "lapis.db.model", ->
     it "many ids", ->
       Things\find_all { 1,2,3,4,5 }
       assert_queries {
-        [[SELECT * from "things" WHERE "id" IN (1, 2, 3, 4, 5)]]
+        [[SELECT * FROM "things" WHERE "id" IN (1, 2, 3, 4, 5)]]
       }
 
     it "single id", ->
       Things\find_all { "yeah" }
       assert_queries {
-        [[SELECT * from "things" WHERE "id" IN ('yeah')]]
+        [[SELECT * FROM "things" WHERE "id" IN ('yeah')]]
       }
+
+    it "raw key", ->
+      Things\find_all { "a", "b" }, db.raw "derived(id)"
+
+      Things\find_all { "one", "two" }, {
+        key: db.raw "lookup(name)"
+      }
+
+      assert_queries {
+        [[SELECT * FROM "things" WHERE derived(id) IN ('a', 'b')]]
+        [[SELECT * FROM "things" WHERE lookup(name) IN ('one', 'two')]]
+      }
+
+    it "fails with invalid key", ->
+      assert.has_error(
+        -> Things\find_all { "a", "b" }, { key: {"one", "two"} }
+        "Model.find_all: (things) Must have a singular key to search"
+      )
+
+      assert.has_error(
+        -> Things\find_all { "a", "b" }, db.list {"umm"}
+        "Model.find_all: (things) Must have a singular key to search"
+      )
+
+      assert.has_error(
+        -> Things\find_all { "a", "b" }, key: db.list {"yeah"}
+        "Model.find_all: (things) Must have a singular key to search"
+      )
 
     it "empty ids", ->
       assert.same {}, Things\find_all {}
@@ -100,25 +220,40 @@ describe "lapis.db.model", ->
     it "custom field", ->
       Things\find_all { 1,2,4 }, "dad"
       assert_queries {
-        [[SELECT * from "things" WHERE "dad" IN (1, 2, 4)]]
+        [[SELECT * FROM "things" WHERE "dad" IN (1, 2, 4)]]
       }
-    
+
     it "with fields option", ->
       Things\find_all { 1,2,4 }, fields: "hello"
       assert_queries {
-        [[SELECT hello from "things" WHERE "id" IN (1, 2, 4)]]
+        [[SELECT hello FROM "things" WHERE "id" IN (1, 2, 4)]]
       }
-    
+
     it "with multiple field and key option", ->
       Things\find_all { 1,2,4 }, fields: "hello, world", key: "dad"
       assert_queries {
-        [[SELECT hello, world from "things" WHERE "dad" IN (1, 2, 4)]]
+        [[SELECT hello, world FROM "things" WHERE "dad" IN (1, 2, 4)]]
       }
 
     it "with empty where option", ->
       Things\find_all { 1,2,4 }, where: {}
       assert_queries {
-        [[SELECT * from "things" WHERE "id" IN (1, 2, 4)]]
+        [[SELECT * FROM "things" WHERE "id" IN (1, 2, 4)]]
+      }
+
+    it "with db.clause", ->
+      Things\find_all { 1,2,4 }, where: db.clause {
+        name: "thing"
+      }
+
+      Things\find_all { 1,2,4 }, where: db.clause {
+        deleted: true
+        status: "deleted"
+      }, operator: "OR"
+
+      assert_queries {
+        [[SELECT * FROM "things" WHERE "name" = 'thing' AND "id" IN (1, 2, 4)]]
+        [[SELECT * FROM "things" WHERE ("deleted" OR "status" = 'deleted') AND "id" IN (1, 2, 4)]]
       }
 
     it "with complex options", ->
@@ -133,7 +268,7 @@ describe "lapis.db.model", ->
 
       -- :/
       assert_queries {
-        [[SELECT hello, world from "things" WHERE "color" = 'blue' AND "dad" IN (1, 2, 4) AND "height" = '10px']]
+        [[SELECT hello, world FROM "things" WHERE "color" = 'blue' AND "dad" IN (1, 2, 4) AND "height" = '10px']]
       }
 
     it "with complex options & interpolated clause", ->
@@ -149,7 +284,7 @@ describe "lapis.db.model", ->
       }
 
       assert_queries {
-        [[SELECT hello, world from "things" WHERE "color" = 'blue' AND "dad" IN (1, 2, 4) order by id limit 1234]]
+        [[SELECT hello, world FROM "things" WHERE "color" = 'blue' AND "dad" IN (1, 2, 4) order by id limit 1234]]
       }
 
     it "with complex options & plain clause", ->
@@ -163,7 +298,7 @@ describe "lapis.db.model", ->
       }
 
       assert_queries {
-        [[SELECT hello, world from "things" WHERE "color" = 'blue' AND "dad" IN (1, 2, 4) group by color]]
+        [[SELECT hello, world FROM "things" WHERE "color" = 'blue' AND "dad" IN (1, 2, 4) group by color]]
       }
 
 
@@ -183,8 +318,8 @@ describe "lapis.db.model", ->
 
     assert_queries {
       [[SELECT COUNT(*) AS c FROM "things" where color = 'blue']]
-      [[SELECT * from "things" where color = 'blue' LIMIT 99 OFFSET 198]]
-      [[SELECT * from "things" where number = 100 LIMIT 10 OFFSET 10]]
+      [[SELECT * FROM "things" where color = 'blue' LIMIT 99 OFFSET 198]]
+      [[SELECT * FROM "things" where number = 100 LIMIT 10 OFFSET 10]]
     }
 
 
@@ -212,8 +347,8 @@ describe "lapis.db.model", ->
     pager2\get_page "2020-6-8", 202
 
     assert_queries {
-      [[SELECT * from "things" where "things"."id" > 100 and (color = 'blue') order by "things"."id" ASC limit 99]]
-      [[SELECT * from "things" where ("things"."created_at", "things"."id") > ('2020-6-8', 202) and (not deleted) order by "things"."created_at" ASC, "things"."id" ASC limit 55]]
+      [[SELECT * FROM "things" where "things"."id" > 100 and (color = 'blue') order by "things"."id" ASC limit 99]]
+      [[SELECT * FROM "things" where ("things"."created_at", "things"."id") > ('2020-6-8', 202) and (not deleted) order by "things"."created_at" ASC, "things"."id" ASC limit 55]]
     }
 
 
@@ -244,7 +379,7 @@ describe "lapis.db.model", ->
       [[INSERT INTO "things" ("color") VALUES ('blue') RETURNING "id"]]
       [[INSERT INTO "timed_things" ("created_at", "hello", "updated_at") VALUES ('2013-08-13 06:56:40', 'world', '2013-08-13 06:56:40') RETURNING "id"]]
       [[INSERT INTO "other_things" ("height", "id_a") VALUES ('400px', 120) RETURNING "id_a", "id_b"]]
-      
+
     }
 
   it "should create model with options", ->
@@ -372,7 +507,7 @@ describe "lapis.db.model", ->
 
     assert_queries {
       [[UPDATE "things" SET "color" = 'green', "height" = 100 WHERE "id" = 12]]
-      
+
       [[UPDATE "things" SET "age" = 2000 WHERE "id" IS NULL]]
       [[UPDATE "timed_things" SET "great" = TRUE, "updated_at" = '2013-08-13 06:56:40' WHERE "a" = 2 AND "b" = 3]]
       [[UPDATE "timed_things" SET "hello" = 'world' WHERE "a" = 2 AND "b" = 3]]
@@ -407,8 +542,8 @@ describe "lapis.db.model", ->
     thing2\update {
       b: 4
       actor: "good"
-    }, where: {
-      [db.raw "true"]: db.raw "update_count < 100"
+    }, where: db.clause {
+      "update_count < 100"
       update_id: db.NULL
     }
 
@@ -417,6 +552,13 @@ describe "lapis.db.model", ->
       b: 4
       actor: "good"
     }, thing2
+
+    thing2\update {
+      yes: "no"
+    }, where: db.clause {
+      deleted: true
+      status: "deleted"
+    }, operator: "OR"
 
     mock_query "count %+ 1", {
       affected_rows: 1
@@ -452,24 +594,27 @@ describe "lapis.db.model", ->
         }, {
           where: "oopsie"
         }
-      "Model.update: where condition must be a table"
+      "Model.update: where condition must be a table or db.clause"
     )
 
     assert_queries {
-      [[UPDATE "things" SET "color" = 'green', "height" = 100 WHERE "color" = 'blue' AND "id" = 12]]
-      [[UPDATE "timed_things" SET "actor" = 'good', "b" = 4, "updated_at" = '2013-08-13 06:56:40' WHERE "a" = 2 AND "b" = 3 AND "update_id" IS NULL AND true = update_count < 100]]
-      [[UPDATE "things" SET "count" = count + 1 WHERE "count" = 0 AND "id" = 12 RETURNING "count"]]
-      [[UPDATE "timed_things" SET "color" = 'green' WHERE "a" = 2 AND "age" = '10' AND "b" IS NULL]]
+      [[UPDATE "things" SET "color" = 'green', "height" = 100 WHERE "id" = 12 AND ("color" = 'blue')]]
+      [[UPDATE "timed_things" SET "actor" = 'good', "b" = 4, "updated_at" = '2013-08-13 06:56:40' WHERE "a" = 2 AND "b" = 3 AND (update_count < 100) AND "update_id" IS NULL]]
+      [[UPDATE "timed_things" SET "updated_at" = '2013-08-13 06:56:40', "yes" = 'no' WHERE "a" = 2 AND "b" = 4 AND ("deleted" OR "status" = 'deleted')]]
+      [[UPDATE "things" SET "count" = count + 1 WHERE "id" = 12 AND ("count" = 0) RETURNING "count"]]
+      [[UPDATE "timed_things" SET "color" = 'green' WHERE "a" = 2 AND "b" IS NULL AND ("age" = '10')]]
     }
 
   it "deletes model", ->
+    mock_query [["id" = 2]], { affected_rows: 1 }
+
     class Things extends Model
 
     thing = Things\load { id: 2 }
-    thing\delete!
+    assert.same true, (thing\delete!)
 
     thing = Things\load { }
-    thing\delete!
+    assert.same false, (thing\delete!)
 
     class Things2 extends Model
       @primary_key: {"key1", "key2"}
@@ -477,10 +622,21 @@ describe "lapis.db.model", ->
     thing = Things2\load { key1: "blah blag", key2: 4821 }
     thing\delete!
 
+    thing\delete "one", "two"
+    thing\delete db.clause(status: "spam")
+
+    thing.key2 = nil
+    thing\delete db.clause(status: "spam"), "cool"
+    thing\delete db.clause({status: "spam", spam: true}, operator: "OR"), "cool"
+
     assert_queries {
       [[DELETE FROM "things" WHERE "id" = 2]]
       [[DELETE FROM "things" WHERE "id" IS NULL]]
       [[DELETE FROM "things" WHERE "key1" = 'blah blag' AND "key2" = 4821]]
+      [[DELETE FROM "things" WHERE "key1" = 'blah blag' AND "key2" = 4821 RETURNING "one", "two"]]
+      [[DELETE FROM "things" WHERE "key1" = 'blah blag' AND "key2" = 4821 AND "status" = 'spam']]
+      [[DELETE FROM "things" WHERE "key1" = 'blah blag' AND "key2" IS NULL AND "status" = 'spam' RETURNING "cool"]]
+      [[DELETE FROM "things" WHERE "key1" = 'blah blag' AND "key2" IS NULL AND ("spam" OR "status" = 'spam') RETURNING "cool"]]
     }
 
   it "should check unique constraint", ->
@@ -501,7 +657,7 @@ describe "lapis.db.model", ->
 
 
   it "should create model with extend syntax", ->
-    m = Model\extend "the_things", {
+    m, m_mt = Model\extend "the_things", {
       timestamp: true
       primary_key: {"hello", "world"}
       constraints: {
@@ -512,6 +668,13 @@ describe "lapis.db.model", ->
     assert.same "the_things", m\table_name!
     assert.same {"hello", "world"}, { m\primary_keys! }
     assert.truthy m.constraints.hello
+
+    m_mt.test_method = => "id:#{@id}"
+
+    inst = m\load { id: 55 }
+
+    assert.same "id:55", inst\test_method!
+
 
   describe "include_in", ->
     local Things, ThingItems, things
@@ -540,56 +703,90 @@ describe "lapis.db.model", ->
       assert.same nil, things[5].thing
 
       assert_queries {
-        [[SELECT * from "thing_items" where "id" in (101, 102, 103, 104, 105)]]
+        [[SELECT * FROM "thing_items" WHERE "id" IN (101, 102, 103, 104, 105)]]
       }
+
+    it "with skip_included", ->
+      things[1].thing = { id: 101, name: "leaf" }
+      things[4].thing = { id: 104, name: "leaf" }
+
+      ThingItems\include_in things, "thing_id", skip_included: true
+
+      assert_queries {
+        [[SELECT * FROM "thing_items" WHERE "id" IN (102, 103, 105)]]
+      }
+
 
     it "with flip", ->
       ThingItems\include_in things, "thing_id", flip: true
 
       assert_queries {
-        [[SELECT * from "thing_items" where "thing_id" in (1, 2, 3, 4, 5)]]
+        [[SELECT * FROM "thing_items" WHERE "thing_id" IN (1, 2, 3, 4, 5)]]
       }
 
     it "with where", ->
       ThingItems\include_in things, "thing_id", where: { dad: true }
 
       assert_queries {
-        [[SELECT * from "thing_items" where "id" in (101, 102, 103, 104, 105) and "dad" = TRUE]]
+        [[SELECT * FROM "thing_items" WHERE "id" IN (101, 102, 103, 104, 105) AND "dad"]]
       }
 
     it "with empty where", ->
       ThingItems\include_in things, "thing_id", where: { }
 
       assert_queries {
-        [[SELECT * from "thing_items" where "id" in (101, 102, 103, 104, 105)]]
+        [[SELECT * FROM "thing_items" WHERE "id" IN (101, 102, 103, 104, 105)]]
+      }
+
+    it "with db.clause", ->
+      ThingItems\include_in things, "thing_id", where: db.clause {
+        {"counter > ?", 10}
+        db.clause {
+          "alpha"
+          beta: "dog"
+        }, operator: "OR"
+      }
+
+      ThingItems\include_in things, "thing_id", where: db.clause {
+        alpha: db.NULL
+        beta: db.list {"dog", "cat", "snot"}
+        db.clause {
+          thing: true
+          thong: false
+        }, operator: "and" -- NOTE: intentionally testing lowercase operator here
+      }, operator: "OR"
+
+      assert_queries {
+        [[SELECT * FROM "thing_items" WHERE "id" IN (101, 102, 103, 104, 105) AND (counter > 10) AND ((alpha) OR "beta" = 'dog')]]
+        [[SELECT * FROM "thing_items" WHERE "id" IN (101, 102, 103, 104, 105) AND (("thing" and NOT "thong") OR "alpha" IS NULL OR "beta" IN ('dog', 'cat', 'snot'))]]
       }
 
     it "with fields", ->
       ThingItems\include_in things, "thing_id", fields: "one, two, three"
 
       assert_queries {
-        [[SELECT one, two, three from "thing_items" where "id" in (101, 102, 103, 104, 105)]]
+        [[SELECT one, two, three FROM "thing_items" WHERE "id" IN (101, 102, 103, 104, 105)]]
       }
 
     it "with order", ->
       ThingItems\include_in things, "thing_id", order: "title desc", many: true
 
       assert_queries {
-        [[SELECT * from "thing_items" where "id" in (101, 102, 103, 104, 105) order by title desc]]
+        [[SELECT * FROM "thing_items" WHERE "id" IN (101, 102, 103, 104, 105) ORDER BY title desc]]
       }
 
     it "with group", ->
       ThingItems\include_in things, "thing_id", group: "yeah"
 
       assert_queries {
-        [[SELECT * from "thing_items" where "id" in (101, 102, 103, 104, 105) group by yeah]]
+        [[SELECT * FROM "thing_items" WHERE "id" IN (101, 102, 103, 104, 105) GROUP BY yeah]]
       }
 
     it "with local key", ->
       ThingItems\include_in things, "thing_id", local_key: "other_id", flip: true
 
       assert_queries {
-        [[SELECT * from "thing_items" where "thing_id" in (16, 18, 20, 22, 24)]]
+        [[SELECT * FROM "thing_items" WHERE "thing_id" IN (16, 18, 20, 22, 24)]]
       }
 
     it "with for relation", ->
@@ -597,6 +794,20 @@ describe "lapis.db.model", ->
       import LOADED_KEY from require "lapis.db.model.relations"
       for thing in *things
         assert.same thing[LOADED_KEY], { yeahs: true }
+
+    it "skip_included with relation", ->
+      import mark_loaded_relations from require "lapis.db.model.relations"
+
+      mark_loaded_relations {things[1], things[2]}, "yeahs"
+
+      ThingItems\include_in things, "thing_id", {
+        for_relation: "yeahs"
+        skip_included: true
+      }
+
+      assert_queries {
+        [[SELECT * FROM "thing_items" WHERE "id" IN (103, 104, 105)]]
+      }
 
     it "combines many options", ->
       ThingItems\include_in things, "thing_id", {
@@ -610,7 +821,7 @@ describe "lapis.db.model", ->
       }
 
       assert_queries {
-        [[SELECT yeah, count(*) from "thing_items" where "thing_id" in (16, 18, 20, 22, 24) and "deleted" = FALSE group by yeah order by color desc]]
+        [[SELECT yeah, count(*) FROM "thing_items" WHERE "thing_id" IN (16, 18, 20, 22, 24) AND NOT "deleted" GROUP BY yeah ORDER BY color desc]]
       }
 
     it "applies value function", ->
@@ -673,7 +884,7 @@ describe "lapis.db.model", ->
       }
 
       assert_queries {
-        [[SELECT * from "thing_items" where ("alpha_id", "beta_id") in ((100, 201), (101, 202), (101, 203), (102, 204), (102, 205))]]
+        [[SELECT * FROM "thing_items" WHERE ("alpha_id", "beta_id") IN ((100, 201), (101, 202), (101, 203), (102, 204), (102, 205))]]
       }
 
       assert.same {
@@ -735,8 +946,8 @@ describe "lapis.db.model", ->
 
       assert_queries {
         {
-          [[SELECT * from "thing_items" where ("aid", "bid") in ((100, 201), (101, 202), (101, 203), (102, 204), (102, 205))]]
-          [[SELECT * from "thing_items" where ("bid", "aid") in ((201, 100), (202, 101), (203, 101), (204, 102), (205, 102))]]
+          [[SELECT * FROM "thing_items" WHERE ("aid", "bid") IN ((100, 201), (101, 202), (101, 203), (102, 204), (102, 205))]]
+          [[SELECT * FROM "thing_items" WHERE ("bid", "aid") IN ((201, 100), (202, 101), (203, 101), (204, 102), (205, 102))]]
         }
       }
 
@@ -745,6 +956,40 @@ describe "lapis.db.model", ->
       assert.same thing_items[2], things[3].thing_item
       assert.same thing_items[3], things[4].thing_item
       assert.same nil, things[5].thing_item
+
+    it "with mapped keys combined with where", ->
+      thing_items = {
+        { id: 1, aid: 101, bid: 202 }
+        { id: 2, aid: 101, bid: 203 }
+        { id: 3, aid: 102, bid: 204 }
+        { id: 4, aid: 100, bid: 201 }
+      }
+
+      mock_query "SELECT", thing_items
+
+      ThingItems\include_in things, {
+        aid: "alpha_id"
+        bid: "beta_id"
+      }, {
+        where: {
+          deleted: false
+        }
+      }
+
+      ThingItems\include_in things, {
+        aid: "alpha_id"
+        bid: "beta_id"
+      }, {
+        where: db.clause {
+          blessed: true
+          ordained: true
+        }, operator: "OR"
+      }
+
+      assert_queries {
+        [[SELECT * FROM "thing_items" WHERE ("aid", "bid") IN ((100, 201), (101, 202), (101, 203), (102, 204), (102, 205)) AND NOT "deleted"]]
+        [[SELECT * FROM "thing_items" WHERE ("aid", "bid") IN ((100, 201), (101, 202), (101, 203), (102, 204), (102, 205)) AND ("blessed" OR "ordained")]]
+      }
 
     it "with many", ->
       thing_items = {
@@ -761,7 +1006,7 @@ describe "lapis.db.model", ->
       }, many: true
 
       assert_queries {
-        [[SELECT * from "thing_items" where ("aid", "bid") in ((100, 201), (101, 202), (101, 203), (102, 204), (102, 205))]]
+        [[SELECT * FROM "thing_items" WHERE ("aid", "bid") IN ((100, 201), (101, 202), (101, 203), (102, 204), (102, 205))]]
       }
 
       assert.same {}, things[1].thing_items

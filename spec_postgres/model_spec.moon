@@ -1,6 +1,6 @@
 
-import setup_db, teardown_db from require "spec_postgres.helpers"
-
+import sorted_pairs from require "spec.helpers"
+import configure_postgres, bind_query_log from require "spec_postgres.helpers"
 import drop_tables, truncate_tables from require "lapis.spec.db"
 
 unpack = unpack or table.unpack
@@ -72,19 +72,26 @@ class HasArrays extends Model
       "PRIMARY KEY (id)"
     }
 
-describe "model", ->
-  setup ->
-    setup_db!
+describe "lapis.db.model", ->
+  DEFAULT_DATE = "2023-02-10 21:27:00"
 
-  teardown ->
-    teardown_db!
+  sorted_pairs!
+  configure_postgres!
+
+  local query_log
+  bind_query_log -> query_log
+
+  before_each ->
+    query_log = {}
+    stub(db, "format_date").invokes => DEFAULT_DATE
 
   describe "core model", ->
     build = require "spec.core_model_specs"
     build { :Users, :Posts, :Likes }
 
-  it "should get columns of model", ->
+  it "Model:columns", ->
     Users\create_table!
+    query_log = {}
     assert.same {
       {
         data_type: "integer"
@@ -96,21 +103,29 @@ describe "model", ->
       }
     }, Users\columns!
 
-  it "should fail to create without required types", ->
+    assert.same {
+      [[SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'users']]
+    }, query_log
+
+  it "fail to create without required types", ->
     Posts\create_table!
-    assert.has_error ->
-      Posts\create {}
+    assert.has_error -> Posts\create {}
 
   describe "create", ->
     before_each ->
       Posts\create_table!
 
     it "creates a new post", ->
+      query_log = {}
       post = Posts\create {
         title: "yo"
         body: "okay!"
         user_id: db.NULL
       }
+
+      assert.same {
+        [[INSERT INTO "posts" ("body", "created_at", "title", "updated_at", "user_id") VALUES ('okay!', '2023-02-10 21:27:00', 'yo', '2023-02-10 21:27:00', NULL) RETURNING "id"]]
+      }, query_log
 
       assert.same "yo", post.title
       assert.same nil, post.user_id
@@ -144,10 +159,16 @@ describe "model", ->
       }
 
     it "does a basic update", ->
+      query_log = {}
+
       post\update {
         title: "sure"
         user_id: 234
       }
+
+      assert.same {
+        [[UPDATE "posts" SET "title" = 'sure', "updated_at" = '2023-02-10 21:27:00', "user_id" = 234 WHERE "id" = 1]]
+      }, query_log
 
       assert.same "sure", post.title
       assert.same 234, post.user_id
@@ -181,7 +202,7 @@ describe "model", ->
       assert.same nil, post.user_id
 
   describe "returning", ->
-    it "should create with returning", ->
+    it "creates with returning", ->
       Likes\create_table!
       like = Likes\create {
         user_id: db.raw "1 + 1"
@@ -193,7 +214,7 @@ describe "model", ->
       assert.same 2, like.user_id
       assert.same 4, like.post_id
 
-    it "should create with returning all", ->
+    it "creates with returning all", ->
       Likes\create_table!
       like = Likes\create {
         user_id: 9
@@ -204,7 +225,7 @@ describe "model", ->
       assert.same 9, like.user_id
       assert.same 4, like.post_id
 
-    it "should create with returning specified column", ->
+    it "creates with returning specified column", ->
       Likes\create_table!
       like = Likes\create {
         user_id: 2
@@ -215,7 +236,7 @@ describe "model", ->
       assert.same 2, like.user_id
       assert.same 18, like.post_id
 
-    it "should create with returning null", ->
+    it "creates with returning null", ->
       Posts\create_table!
       post = Posts\create {
         title: db.raw "'hi'"
@@ -227,7 +248,7 @@ describe "model", ->
       assert.same "okay!", post.body
       assert.falsy post.user_id
 
-    it "should update with returning", ->
+    it "updates with returning", ->
       Likes\create_table!
       like = Likes\create {
         user_id: 1
@@ -245,7 +266,7 @@ describe "model", ->
       assert.same 123, like.post_id
       assert.same 1, like.user_id
 
-    it "should update with returning null", ->
+    it "updates with returning null", ->
       Posts\create_table!
       post = Posts\create {
         title: "hi"

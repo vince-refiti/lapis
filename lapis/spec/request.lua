@@ -33,6 +33,28 @@ add_cookie = function(headers, name, val)
     end
   end
 end
+local extract_cookies
+extract_cookies = function(response_headers)
+  local set_cookies = response_headers.set_cookie
+  if not (set_cookies) then
+    return 
+  end
+  if type(set_cookies) == "string" then
+    set_cookies = {
+      set_cookies
+    }
+  end
+  local parsed_cookies = { }
+  for _index_0 = 1, #set_cookies do
+    local cookie_header = set_cookies[_index_0]
+    local parse_cookie_string
+    parse_cookie_string = require("lapis.util").parse_cookie_string
+    local tmp = parse_cookie_string(cookie_header)
+    local set_name = cookie_header:match("[^=]+")
+    parsed_cookies[set_name] = tmp[set_name]
+  end
+  return parsed_cookies
+end
 local mock_request
 mock_request = function(app_cls, url, opts)
   if opts == nil then
@@ -174,8 +196,14 @@ mock_request = function(app_cls, url, opts)
     now = function()
       return os.time()
     end,
-    update_time = function(self)
+    update_time = function()
       return os.time()
+    end,
+    time = function()
+      return os.time()
+    end,
+    get_phase = function()
+      return "init"
     end,
     ctx = { },
     var = setmetatable({
@@ -237,7 +265,46 @@ mock_request = function(app_cls, url, opts)
         return out
       end,
       get_post_args = function()
-        return opts.post or { }
+        if opts.post then
+          return opts.post
+        end
+        if opts.body and headers["Content-type"] == "application/x-www-form-urlencoded" then
+          do
+            local args = parse_query_string(opts.body)
+            if args then
+              local _tbl_0 = { }
+              for k, v in pairs(args) do
+                if type(k) == "string" then
+                  _tbl_0[k] = v
+                end
+              end
+              return _tbl_0
+            end
+          end
+        end
+        return { }
+      end
+    },
+    location = {
+      capture = function()
+        return {
+          status = 200,
+          header = { },
+          body = ""
+        }
+      end,
+      capture_multi = function(args)
+        local _accum_0 = { }
+        local _len_0 = 1
+        for i = 1, #args do
+          _accum_0[_len_0] = {
+            status = 200,
+            header = { },
+            body = ""
+          }
+          _len_0 = _len_0 + 1
+        end
+        return _accum_0
       end
     }
   })
@@ -370,5 +437,6 @@ return {
   assert_request = assert_request,
   normalize_headers = normalize_headers,
   mock_action = mock_action,
-  stub_request = stub_request
+  stub_request = stub_request,
+  extract_cookies = extract_cookies
 }

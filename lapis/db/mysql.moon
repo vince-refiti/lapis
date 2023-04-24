@@ -5,26 +5,21 @@ import concat from table
 unpack = unpack or table.unpack
 
 import
-  FALSE
   NULL
-  TRUE
   build_helpers
-  format_date
   is_raw
-  raw
   is_list
-  list
-  is_encodable
   from require "lapis.db.base"
 
-local conn, logger
-local *
+logger = require "lapis.logging"
+
+-- NOTE: active connection only stored in local with luasql, otherwise request
+-- context is used to store connection
+local active_connection
+
+local connect, raw_query
 
 BACKENDS = {
-  -- the raw backend is a debug backend that lets you specify the function that
-  -- handles the query
-  raw: (fn) -> fn
-
   luasql: ->
     config = require("lapis.config").get!
     mysql_config = assert config.mysql, "missing mysql configuration"
@@ -34,16 +29,21 @@ BACKENDS = {
     if mysql_config.host
       table.insert conn_opts, mysql_config.host
       if mysql_config.port then table.insert conn_opts, mysql_config.port
-    conn = assert luasql\connect unpack(conn_opts)
+
+    -- Note that connection is established up front. This is
+    -- necessary since connection is used for escaping literal when
+    -- using lua sql. This is distinct from ngx mode which lazily
+    -- establishes connection on first query
+    active_connection = assert luasql\connect unpack(conn_opts)
 
     (q) ->
-      logger.query q if logger
-      cur = assert conn\execute q
+      logger.query q
+      cur = assert active_connection\execute q
       has_rows = type(cur) != "number"
 
       result = {
         affected_rows: has_rows and cur\numrows! or cur
-        last_auto_id: conn\getlastautoid!
+        last_auto_id: active_connection\getlastautoid!
       }
 
       if has_rows
@@ -90,7 +90,7 @@ BACKENDS = {
     mysql = require "resty.mysql"
 
     (q) ->
-      logger.query q if logger
+      logger.query q
 
       db = ngx and ngx.ctx.resty_mysql_db
       unless db
@@ -140,13 +140,6 @@ BACKENDS = {
       result
 }
 
-set_backend = (name, ...) ->
-  backend = BACKENDS[name]
-  unless backend
-    error "Failed to find MySQL backend: #{name}"
-
-  raw_query = backend ...
-
 set_raw_query = (fn) ->
   raw_query = fn
 
@@ -158,8 +151,8 @@ escape_literal = (val) ->
     when "number"
       return tostring val
     when "string"
-      if conn
-        return "'#{conn\escape val}'"
+      if active_connection
+        return "'#{active_connection\escape val}'"
       else if ngx
         return ngx.quote_sql_str(val)
       else
@@ -185,26 +178,23 @@ escape_identifier = (ident) ->
   ident = tostring ident
   '`' ..  (ident\gsub '`', '``') .. '`'
 
-init_logger = ->
-  logger = require "lapis.logging"
-
-set_logger = (_logger) -> logger = _logger
-get_logger = -> logger
-
-init_db = ->
+connect = ->
   config = require("lapis.config").get!
-  backend = config.mysql and config.mysql.backend
-  unless backend
-    backend = if ngx
+  backend_name = config.mysql and config.mysql.backend
+
+  use_nginx = ngx and ngx.ctx and ngx.socket
+
+  unless backend_name
+    backend_name = if use_nginx
       "resty_mysql"
     else
       "luasql"
 
-  set_backend backend
+  backend = BACKENDS[backend_name]
+  unless backend
+    error "Failed to find MySQL backend: #{backend_name}"
 
-connect = ->
-  init_logger!
-  init_db! -- replaces raw_query to default backend
+  raw_query = backend!
 
 raw_query = (...) ->
   connect!
@@ -271,17 +261,10 @@ _delete = (table, cond, ...) ->
 _truncate = (table) ->
   raw_query "TRUNCATE " .. escape_identifier table
 
--- To be implemented
--- {
---   :parse_clause
--- 
--- }
+setmetatable {
+  __type: "mysql"
 
-{
   :connect
-  :raw, :is_raw, :NULL, :TRUE, :FALSE
-  :list, :is_list
-  :is_encodable
 
   :encode_values
   :encode_assigns
@@ -292,19 +275,15 @@ _truncate = (table) ->
   :escape_literal
   :escape_identifier
 
-  :format_date
-  :init_logger
-
-  :set_backend
   :set_raw_query
   :get_raw_query
-
-  :get_logger
-  :set_logger
 
   select: _select
   insert: _insert
   update: _update
   delete: _delete
   truncate: _truncate
-}
+
+  :BACKENDS
+}, __index: require "lapis.db.base"
+

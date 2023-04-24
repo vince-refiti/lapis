@@ -1,5 +1,7 @@
 
-import render_html, Widget from require "lapis.html"
+import render_html, Widget, is_mixins_class from require "lapis.html"
+
+import sorted_pairs from require "spec.helpers"
 
 render_widget = (w) ->
   buffer = {}
@@ -7,6 +9,8 @@ render_widget = (w) ->
   table.concat buffer
 
 describe "lapis.html", ->
+  sorted_pairs!
+
   it "should render html", ->
     output = render_html ->
       b "what is going on?"
@@ -92,6 +96,23 @@ describe "lapis.html", ->
     assert.same "helloworld", output
     assert.same "<div>This is the capture</div>", capture_result.value
 
+
+  describe "classnames", ->
+    import classnames from require "lapis.html"
+
+    it "flattens classes", ->
+      assert.same "one two last haveit yes", classnames {
+        "one"
+        "two"
+        yes: true
+        { skipped: false, haveit: true, "", "last"}
+      }
+
+    it "passes string through", ->
+      assert.same "hi", classnames "hi"
+      assert.same "", classnames ""
+      assert.same " um  ", classnames " um  "
+
   describe "Widget", ->
     it "should render the widget", ->
       class TestWidget extends Widget
@@ -101,6 +122,18 @@ describe "lapis.html", ->
 
       input = render_widget TestWidget message: "Hello World!", inner: -> b "Stay Safe"
       assert.same input, [[<div class="hello">Hello World!</div><b>Stay Safe</b>]]
+
+    it "creates widget from the lapis.lua module", ->
+      TestWidget = require("lapis.lua").class "TestWidget", {
+        some_method: =>
+          span "good work"
+
+        content: =>
+          div "Hello world"
+          @some_method!
+      }, Widget
+
+      assert.same [[<div>Hello world</div><span>good work</span>]], TestWidget!\render_to_string!
 
     it "renders widget with inheritance", ->
       class BaseWidget extends Widget
@@ -208,20 +241,34 @@ describe "lapis.html", ->
 
       assert.same {"1", "20", "30", "40", "500"}, buff
 
-    it "should set layout opt", ->
+    it "sets content_for on request helper", ->
+      Request = require "lapis.request"
       class TheWidget extends Widget
         content: =>
           @content_for "title", -> div "hello world"
           @content_for "another", "yeah"
 
       widget = TheWidget!
-      helper = { layout_opts: {} }
+      helper = setmetatable { }, __index: Request.__base
       widget\include_helper helper
       out = render_widget widget
 
-      assert.same { _content_for_another: "yeah", _content_for_title: "<div>hello world</div>" }, helper.layout_opts
+      assert.same { _content_for_another: "yeah", _content_for_title: "<div>hello world</div>" }, helper
 
-    it "should render content for", ->
+    it "fails to set content_for if there is no request helper", ->
+      class TheWidget extends Widget
+        content: =>
+          @content_for "title", -> div "hello world"
+          @content_for "another", "yeah"
+
+      assert.has_error(
+        -> render_widget TheWidget!
+        "content_for called on a widget without a Request in the helper chain. content_for is only available in a request lifecycle"
+      )
+
+    it "renders content_for", ->
+      Request = require "lapis.request"
+
       class TheLayout extends Widget
         content: =>
           assert @has_content_for("title"), "should have title content_for"
@@ -242,36 +289,66 @@ describe "lapis.html", ->
           div "what the heck?"
 
 
-      layout_opts = {}
+      request = setmetatable {
+        _content_for_inner: {}
+      }, __index: Request.__base
 
-      inner = {}
       view = TheWidget!
-      view\include_helper { :layout_opts }
-      view inner
+      view\include_helper request
+      view request._content_for_inner
 
-      layout_opts._content_for_inner = -> raw inner
+      layout = TheLayout!
+      layout\include_helper request
 
-      assert.same [[<div class="title"><div>hello world</div></div><div>what the heck?</div>The&#039;s footer]], render_widget TheLayout layout_opts
+      assert.same [[<div class="title"><div>hello world</div></div><div>what the heck?</div>The&#039;s footer]], render_widget layout
 
-    it "should append multiple content for", ->
+    it "appends multiple content for", ->
+      Request = require "lapis.request"
+
       class TheLayout extends Widget
         content: =>
+          -- layout should also be able to write to content for
+          @content_for "deep", "Sure"
+          @content_for "item", "999"
+
           element "content-for", ->
             @content_for "things"
+
+          @content_for "deep"
+          @content_for "item"
+
+      class Child extends Widget
+        content: =>
+          @content_for "deep", "Very Deep!"
+          text "Yup"
 
       class TheWidget extends Widget
         content: =>
           @content_for "things", -> div "hello world"
           @content_for "things", "dual world"
+          widget Child!
 
-      layout_opts = {}
+      request = setmetatable {
+        _content_for_inner: {}
+      }, __index: Request.__base
 
-      inner = {}
       view = TheWidget!
-      view\include_helper { :layout_opts }
-      view inner
+      view\include_helper request
+      view request._content_for_inner
 
-      assert.same [[<content-for><div>hello world</div>dual world</content-for>]], render_widget TheLayout layout_opts
+      layout = TheLayout!
+      layout\include_helper request
+
+      assert.same {
+        _content_for_deep: "Very Deep!",
+        _content_for_inner: { "Yup" }
+        _content_for_things: {
+          "<div>hello world</div>"
+          "dual world"
+        }
+      }, request
+
+      assert.same [[<content-for><div>hello world</div>dual world</content-for>Very Deep!Sure999]], render_widget layout
 
     it "should instantiate widget class when passed to widget helper", ->
       class SomeWidget extends Widget
@@ -309,6 +386,31 @@ describe "lapis.html", ->
 
       assert.same [[]], render_widget Outer!
       assert.same [[<div>before</div><dt>hello</dt><span>yeah</span><dt>world</dt><div>after</div>]], capture_result.value
+
+    describe "Widget:extend", ->
+      it "creates basic widget", ->
+        anonymous = Widget\extend {
+          content: =>
+            div "Hello #{@thing}"
+        }
+
+        named = Widget\extend "MyThing", {
+          content: =>
+            div "Wow #{@zang} from #{@@__name}"
+        }
+
+        assert.same "<div>Hello world</div>", anonymous(thing: "world")\render_to_string!
+        assert.same "<div>Wow zong from MyThing</div>", named(zang: "zong")\render_to_string!
+
+      it "creates widget from function", ->
+        anonymous = Widget\extend =>
+          div "Hello #{@thing}"
+
+        named = Widget\extend "MyThing", =>
+          div "Wow #{@zang} from #{@@__name}"
+
+        assert.same "<div>Hello world</div>", anonymous(thing: "world")\render_to_string!
+        assert.same "<div>Wow zong from MyThing</div>", named(zang: "zong")\render_to_string!
 
     describe "widget.render_to_file", ->
       class Inner extends Widget
@@ -369,6 +471,30 @@ describe "lapis.html", ->
 
         assert.same [[<div class="outer"><div class="the_thing">hello world</div></div>]],
           render_widget SomeWidget!
+
+        assert.false is_mixins_class SomeWidget
+        assert.true is_mixins_class SomeWidget.__parent
+        assert.false is_mixins_class SomeWidget.__parent.__parent
+
+        assert.false is_mixins_class SomeWidget!
+        assert.false is_mixins_class SomeWidget.__parent! -- should it be impossible to instantiate a mixins class??
+
+      it "includes mixin from Lua created class", ->
+        class SomeMixin
+          some_method: =>
+            span "good work"
+
+        TestWidget = require("lapis.lua").class "TestWidget", {
+          content: =>
+            div "Hello world"
+            @some_method!
+        }, Widget, (cls) ->
+          cls\include SomeMixin
+
+        assert.same [[<div>Hello world</div><span>good work</span>]], TestWidget!\render_to_string!
+
+        assert.false is_mixins_class TestWidget
+        assert.true is_mixins_class TestWidget.__parent
 
       it "includes by module name", ->
         package.loaded["widgets.mymixin"] = class MyMixin
@@ -467,4 +593,12 @@ describe "lapis.html", ->
           "Your widget tried to include a class that extends from Widget. An included class should be a plain class and not another widget"
         )
 
+      it "does not allow include on Widget", ->
+        class MistakeMixin
+          height: => 10
+
+        assert.has_error(
+          -> Widget\include MistakeMixin
+          "You attempted to call call Widget:include on the read-only Widget base class. You must create a sub-class to use include"
+        )
 

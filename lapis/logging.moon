@@ -47,6 +47,9 @@ query = do
       l = config.logging
       return unless l and l.queries
 
+    if force_logging == "0"
+      return
+
     if duration
       _print log_tpl_time\format prefix, "%.2fms"\format(duration * 1000), query
     else
@@ -73,7 +76,7 @@ request = (r) ->
 
   t = "[%{#{status_color}}%s%{reset}] %{bright}%{cyan}%s%{reset} - %s"
 
-  cmd = "#{req.cmd_mth} #{req.cmd_url}"
+  cmd = "#{req.method} #{req.request_uri}"
   _print colors(t)\format status, cmd, flatten_params r.url_params
 
 migration = do

@@ -1,24 +1,26 @@
-import find_nginx, start_nginx, write_config_for, get_pid from require "lapis.cmd.nginx"
+unpack = unpack or table.unpack
 
 {
-  new: (flags) =>
-    import config_path, config_path_etlua from require("lapis.cmd.nginx").nginx_runner
+  new: (args, template_flags) =>
+    import find_nginx from require "lapis.cmd.nginx"
+    nginx = find_nginx!
 
-    if @path.exists(config_path) or @path.exists(config_path_etlua)
-      @fail_with_message "nginx.conf already exists"
+    if not nginx and not args.force
+      @fail_with_message "Unable to find an OpenResty installation on your system. You can bypass this error with --force or use LAPIS_OPENRESTY environment variable to directly specify the path of the OpenResty binary"
 
-    if flags["etlua-config"]
-      @write_file_safe config_path_etlua, require "lapis.cmd.nginx.templates.config_etlua"
-    else
-      @write_file_safe config_path, require "lapis.cmd.nginx.templates.config"
+    @execute {"generate", "config", "--nginx", unpack template_flags}
+    @execute {"generate", "nginx.config", args.etlua_config and "--etlua" or nil}
+    @execute {"generate", "nginx.mime_types" }
 
-    @write_file_safe "mime.types", require "lapis.cmd.nginx.templates.mime_types"
+  server: (args) =>
+    import find_nginx, start_nginx, write_config_for from require "lapis.cmd.nginx"
 
-  server: (flags, environment) =>
+    {:environment} = args
+
     nginx = find_nginx!
 
     unless nginx
-      @fail_with_message "can not find suitable server installation"
+      @fail_with_message "Unable to find an OpenResty installation on your system. The LAPIS_OPENRESTY environment variable can be used to directly specify the path of the OpenResty binary"
 
     write_config_for environment
     start_nginx!

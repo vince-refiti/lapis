@@ -2,6 +2,17 @@
 nginx = require "lapis.cmd.nginx"
 
 describe "lapis.cmd.nginx", ->
+  local snapshot
+
+  before_each ->
+    snapshot = assert\snapshot!
+
+    stub(os, "exit").invokes (status) ->
+      error "os.exit was called unexpectedly: #{exit_code}"
+
+  after_each ->
+    snapshot\revert!
+
   it "should compile config", ->
     tpl = [[
 hello: ${{some_var}}]]
@@ -11,6 +22,16 @@ hello: ${{some_var}}]]
     assert.same [[
 env LAPIS_ENVIRONMENT;
 hello: what's up]], compiled
+
+  it "compies config with variable that doesn't exist", ->
+    tpl = [[
+hello: ${{oops_var}}]]
+
+    compiled = nginx.compile_config tpl, { some_var: "what's up" }
+
+    assert.same [[
+env LAPIS_ENVIRONMENT;
+hello: ${{oops_var}}]], compiled
 
   it "should compile postgres connect string", ->
     tpl = [[
@@ -75,34 +96,39 @@ hello: what's up]], compiled
     assert.same "env LAPIS_ENVIRONMENT;\nthing: #{val}", compiled
 
 describe "lapis.cmd.actions", ->
-  import get_action, execute from require "lapis.cmd.actions"
+  import get_command, command_runner, execute from require "lapis.cmd.actions"
+
+  it "builds the command parser", ->
+    parser = command_runner\build_parser!
+    assert.same {false, "a command is required"}, { parser\pparse {} }
 
   it "gets built in action", ->
-    action = get_action "help"
-    assert.same "help", action.name
-
-  it "gets aliased action", ->
-    action = get_action "serve"
-    assert.same "server", action.name
+    command = get_command "new"
+    assert.same "new", command.name
 
   it "gets nil for invalid action", ->
-    action = get_action "wazzupf2323"
-    assert.same nil, action
-
-  it "gets action from module", ->
-    package.loaded["lapis.cmd.actions.cool"] = {
-      name: "cool"
-      ->
-    }
-
-    action = get_action "cool"
-    assert.same "cool", action.name
+    command = get_command "wazzupf2323"
+    assert.same nil, command
 
   it "executes help", ->
-    p = _G.print
-    _G.print = ->
-    execute {"help"}
-    _G.print = p
+    local exit_status
+
+    stub(os, "exit").invokes (status) ->
+      exit_status = status
+      coroutine.yield "os.exit"
+
+    output = {}
+
+    s_print = stub(_G, "print").invokes (...) ->
+      table.insert output, table.concat {...}, "\t"
+
+    assert.same "os.exit", coroutine.wrap(-> execute {"help"})!
+    print\revert!
+
+    output = table.concat output, "\n"
+
+    assert.same 0, exit_status
+    assert output\match "Options:"
 
 
 describe "lapis.cmd.actions.execute", ->
@@ -114,7 +140,7 @@ describe "lapis.cmd.actions.execute", ->
   before_each ->
     cmd = require "lapis.cmd.actions"
     -- replace the annotated path with silent one
-    cmd.actions.path = require "lapis.cmd.path"
+    cmd.command_runner.path = require "lapis.cmd.path"
 
     old_dir = lfs.currentdir!
 
@@ -147,73 +173,129 @@ describe "lapis.cmd.actions.execute", ->
     table.sort have_files
     assert.same files, have_files
 
+  describe "debug", ->
+    it "gets default environment with no overrides", ->
+      res = cmd.execute { "debug" }
+      assert.same "test", res.environment
+
+    it "environment with --environment", ->
+      res = cmd.execute { "debug", "--environment", "cool" }
+      assert.same "cool", res.environment
+
+      res = cmd.execute { "--environment", "cool", "debug" }
+      assert.same "cool", res.environment
+
+    it "environment with arg", ->
+      res = cmd.execute { "debug", "wow" }
+      assert.same "wow", res.environment
+
+    it "fails with double env", ->
+      assert.has_error(
+        -> cmd.execute { "--environment=umm", "debug", "wow" }
+        "You tried to set the environment twice. Use either --environment or the environment argument, not both"
+      )
+
   describe "new", ->
-    it "default app", ->
-      cmd.execute { [0]: "lapis", "new" }
+    before_each ->
+      stub(require("lapis.cmd.nginx"), "find_nginx").returns true
+
+    it "lapis new", ->
+      cmd.execute { "new" }
 
       assert_files {
-        "app.moon", "mime.types", "models.moon", "nginx.conf"
+        "app.lua", "config.lua", "mime.types", "models.lua", "nginx.conf"
+      }
+
+    it "lapis new --moonscript", ->
+      cmd.execute { "new", "--moonscript" }
+
+      assert_files {
+        "app.moon", "config.moon", "mime.types", "models.moon", "nginx.conf"
       }
 
     it "fails if files already exist", ->
-      cmd.execute { [0]: "lapis", "new" }
+      cmd.execute { "new" }
       assert.has_error ->
-        cmd.execute { [0]: "lapis", "new" }
+        cmd.execute { "new" }
 
-    it "cqueues app", ->
-      cmd.execute { [0]: "lapis", "new", "--cqueues" }
-      assert_files { "app.moon", "config.lua", "models.moon" }
+    it "lapis new --cqueues", ->
+      -- --forsce to bypass the module dependency check
+      cmd.execute { "new", "--cqueues", "--force" }
+      assert_files { "app.lua", "config.lua", "models.lua" }
 
-    it "etlua config", ->
-      cmd.execute { [0]: "lapis", "new", "--etlua-config" }
+    it "lapis new --etlua-config", ->
+      cmd.execute { "new", "--etlua-config" }
 
       assert_files {
-        "app.moon", "mime.types", "models.moon", "nginx.conf.etlua"
+        "app.lua", "config.lua", "mime.types", "models.lua", "nginx.conf.etlua"
       }
 
-    it "command line flags can go anywhere", ->
-      cmd.execute { [0]: "lapis", "--etlua-config", "new" }
-
+    it "lapis new --tup", ->
+      cmd.execute { "new", "--tup" }
       assert_files {
-        "app.moon", "mime.types", "models.moon", "nginx.conf.etlua"
+        "app.lua", "config.lua", "mime.types", "models.lua", "nginx.conf", "Tupfile", "Tuprules.tup"
       }
 
-    it "lua default", ->
-      cmd.execute { [0]: "lapis", "new", "--lua" }
+    it "lapis new --git", ->
+      cmd.execute { "new", "--git" }
       assert_files {
-        "app.lua", "mime.types", "models.lua", "nginx.conf"
-      }
-
-    it "has tup", ->
-      cmd.execute { [0]: "lapis", "new", "--tup" }
-      assert_files {
-        "app.moon", "mime.types", "models.moon", "nginx.conf", "Tupfile", "Tuprules.tup"
-      }
-
-    it "has git", ->
-      cmd.execute { [0]: "lapis", "new", "--git" }
-      assert_files {
-        "app.moon", "mime.types", "models.moon", "nginx.conf", ".gitignore"
+        "app.lua", "config.lua", "mime.types", "models.lua", "nginx.conf", ".gitignore"
       }
 
   describe "build", ->
-    it "buils app", ->
-      cmd.execute { [0]: "lapis", "new" }
-      cmd.execute { [0]: "lapis", "build" }
+    it "lapis build", ->
+      cmd.execute { "new" }
+      cmd.execute { "build" }
 
       assert_files {
-        "app.moon", "mime.types", "models.moon", "nginx.conf", "nginx.conf.compiled"
+        "app.lua", "config.lua", "mime.types", "models.lua", "nginx.conf", "nginx.conf.compiled"
       }
 
   describe "generate", ->
-    it "generates model", ->
-      cmd.execute { [0]: "lapis", "generate", "model", "things" }
+    it "lapis generate model things", ->
+      cmd.execute { "generate", "model", "things" }
+      assert_files { "models/things.lua" }
+
+    it "lapis generate model --moonscript things", ->
+      cmd.execute { "generate", "model", "things", "--moonscript" }
       assert_files { "models/things.moon" }
 
-    it "generates spec", ->
-      cmd.execute { [0]: "lapis", "generate", "spec", "models.things" }
+    it "lapis generate spec models.things", ->
+      cmd.execute { "generate", "spec", "models.things" }
+      assert_files { "spec/models/things_spec.lua" }
+
+    it "lapis generate spec models.things --moonscript", ->
+      cmd.execute { "generate", "spec", "models.things", "--moonscript" }
       assert_files { "spec/models/things_spec.moon" }
 
+    it "lapis generate migration in lua", ->
+      cmd.execute { "generate", "migration", "--lua" }
+      cmd.execute { "generate", "migration", "--lua" } -- appends a new migration
+      assert_files { "migrations.lua" }
+
+      -- load the file to ensure it's valid Lua syntax
+      assert loadfile("migrations.lua")
+
+    it "lapis generate migration in lua", ->
+      cmd.execute { "generate", "migration", "--moon" }
+      cmd.execute { "generate", "migration", "--moon" } -- appends a new migration
+      assert_files { "migrations.moon" }
+
+      -- load file to ensure it's valid moonscript -> lua syntax
+      assert require("moonscript.base").loadfile "migrations.moon"
+
+    it "lapis generate rockspec", ->
+      cmd.execute { "generate", "rockspec" }
+      cmd.execute { "generate", "rockspec", "--moon", "--sqlite", "--version-name=dev-2", "--app-name=lapis-thing" }
+
+      assert_files {
+        "lapis-thing-dev-2.rockspec"
+        "spec-tmp-app-dev-1.rockspec"
+      }
+
+      -- verify that they are valid lua
+      assert loadfile("lapis-thing-dev-2.rockspec")
+      assert loadfile("spec-tmp-app-dev-1.rockspec")
 
 describe "lapis.cmd.util", ->
   it "columnizes", ->

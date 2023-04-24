@@ -1,20 +1,29 @@
-
 import push, pop from require "lapis.environment"
-import set_backend, init_logger from require "lapis.db.postgres"
+import before_each, after_each, setup, teardown, stub, assert from require "busted"
 
-setup_db = (opts) ->
-  push "test", {
-    postgres: {
-      backend: "pgmoon"
-      database: "lapis_test"
+configure_postgres = ->
+  local snapshot
+
+  before_each -> snapshot = assert\snapshot!
+  after_each -> snapshot\revert!
+
+  setup ->
+    push "test", {
+      postgres: {
+        backend: "pgmoon"
+        database: "lapis_test"
+      }
     }
-  }
 
-  set_backend "pgmoon"
-  init_logger!
+  teardown ->
+    pop!
 
-teardown_db = ->
-  pop!
+bind_query_log = (get_query_log) ->
+  before_each ->
+    logger = require "lapis.logging"
+    stub(logger, "query").invokes (query) ->
+      if queries = get_query_log!
+        table.insert queries, query
 
-{:setup_db, :teardown_db}
+{:configure_postgres, :bind_query_log}
 

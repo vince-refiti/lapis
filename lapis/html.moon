@@ -39,9 +39,6 @@ unescape = (text) ->
     decoded = html_unescape_entities[enc]
     decoded if decoded else enc)
 
-strip_tags = (html) ->
-  html\gsub "<[^>]+>", ""
-
 void_tags = {
   "area"
   "base"
@@ -73,7 +70,10 @@ classnames = (t) ->
   ccs = for k,v in pairs t
     if type(k) == "number"
       continue if v == ""
-      v
+      if type(v) == "table"
+        classnames v
+      else
+        tostring v
     else
       continue unless v
       k
@@ -119,11 +119,13 @@ element = (buffer, name, attrs, ...) ->
 
       unless has_content
         \write "/>"
-        return buffer
+        return
 
     \write ">"
     \write_escaped attrs, ...
     \write "</", name, ">"
+
+  return -- return nothing
 
 class Buffer
   builders: {
@@ -252,7 +254,12 @@ render_html = (fn) ->
   html_writer(fn) buffer
   concat buffer
 
-helper_key = setmetatable {}, __tostring: -> "::helper_key::"
+-- this is a unique identifier to store the helper chain on a widget
+HELPER_KEY = setmetatable {}, __tostring: -> "::helper_key::"
+
+is_mixins_class = (cls) ->
+  rawget(cls, "_mixins_class") == true
+
 -- ensures that all methods are called in the buffer's scope
 class Widget
   @__inherited: (cls) =>
@@ -268,7 +275,7 @@ class Widget
       error "model does not have parent class"
 
     -- if class has already been injected, return it
-    if rawget parent, "_mixins_class"
+    if is_mixins_class parent
       return parent, false
 
     mixins_class = class extends model.__parent
@@ -279,10 +286,31 @@ class Widget
     setmetatable model.__base, mixins_class.__base
     mixins_class, true
 
+  @extend: (name, tbl) =>
+    lua = require "lapis.lua"
+
+    switch type(name)
+      when "table", "function"
+        tbl = name
+        name = nil
+
+    if type(tbl) == "function"
+      tbl = { content: tbl }
+
+    class_fields = { }
+
+    cls = lua.class name or "ExtendedWidget", tbl, @
+    cls, cls.__base
+
   @include: (other_cls) =>
     other_cls, other_cls_name = if type(other_cls) == "string"
       require(other_cls), other_cls
 
+    if @ == Widget
+      error "You attempted to call call Widget:include on the read-only Widget base class. You must create a sub-class to use include"
+
+    -- This works because include adds inheritance chain recursively depth
+    -- first, and it will hit Widget form parents
     if other_cls == Widget
       error "Your widget tried to include a class that extends from Widget. An included class should be a plain class and not another widget"
 
@@ -310,8 +338,8 @@ class Widget
         if type(k) == "string"
           @[k] = v
 
-  _set_helper_chain: (chain) => rawset @, helper_key, chain
-  _get_helper_chain: => rawget @, helper_key
+  _set_helper_chain: (chain) => rawset @, HELPER_KEY, chain
+  _get_helper_chain: => rawget @, HELPER_KEY
 
   _find_helper: (name) =>
     if chain = @_get_helper_chain!
@@ -335,36 +363,38 @@ class Widget
 
   -- insert table onto end of helper_chain
   include_helper: (helper) =>
-    if helper_chain = @[helper_key]
+    if helper_chain = @[HELPER_KEY]
       insert helper_chain, helper
     else
       @_set_helper_chain { helper }
     nil
 
   content_for: (name, val) =>
-    full_name = CONTENT_FOR_PREFIX .. name
-    return @_buffer\write @[full_name] unless val
+    request = @.get_request and @get_request!
+    unless request
+      error "content_for called on a widget without a Request in the helper chain. content_for is only available in a request lifecycle"
 
-    if helper = @_get_helper_chain![1]
-      layout_opts = helper.layout_opts
+    if val == nil
+      -- No value provided, write the current value to the buffer
+      @_buffer\write request[CONTENT_FOR_PREFIX .. name]
+      return
 
-      val = if type(val) == "string"
+    -- evaluate value to string
+    val = switch type(val)
+      when "string"
         escape val
-      else
+      when "function"
         getfenv(val).capture val
+      else
+        error "Got unknown type for content_for value: #{type val}"
 
-      existing = layout_opts[full_name]
-      switch type existing
-        when "nil"
-          layout_opts[full_name] = val
-        when "table"
-          table.insert layout_opts[full_name], val
-        else
-          layout_opts[full_name] = {existing, val}
+    request.__class.support.append_content_for request, name, val
+    return
 
   has_content_for: (name) =>
-    full_name = CONTENT_FOR_PREFIX .. name
-    not not @[full_name]
+    request = @.get_request and @get_request!
+    return false unless request
+    not not request[CONTENT_FOR_PREFIX .. name]
 
   content: => -- implement me
 
@@ -443,7 +473,7 @@ class Widget
     setmetatable @, meta
 
     @_buffer.widget = old_widget
-    nil
+    return -- return nothing
 
-{ :Widget, :Buffer, :html_writer, :render_html, :escape, :unescape, :classnames, :element, :CONTENT_FOR_PREFIX }
+{ :Widget, :Buffer, :html_writer, :render_html, :escape, :unescape, :classnames, :element, :is_mixins_class, :CONTENT_FOR_PREFIX }
 

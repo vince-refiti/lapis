@@ -6,17 +6,15 @@ end
 local concat
 concat = table.concat
 local unpack = unpack or table.unpack
-local FALSE, NULL, TRUE, build_helpers, format_date, is_raw, raw, is_list, list, is_encodable
+local NULL, build_helpers, is_raw, is_list
 do
   local _obj_0 = require("lapis.db.base")
-  FALSE, NULL, TRUE, build_helpers, format_date, is_raw, raw, is_list, list, is_encodable = _obj_0.FALSE, _obj_0.NULL, _obj_0.TRUE, _obj_0.build_helpers, _obj_0.format_date, _obj_0.is_raw, _obj_0.raw, _obj_0.is_list, _obj_0.list, _obj_0.is_encodable
+  NULL, build_helpers, is_raw, is_list = _obj_0.NULL, _obj_0.build_helpers, _obj_0.is_raw, _obj_0.is_list
 end
-local conn, logger
-local BACKENDS, set_backend, set_raw_query, get_raw_query, escape_literal, escape_identifier, init_logger, set_logger, get_logger, init_db, connect, raw_query, interpolate_query, encode_values, encode_assigns, encode_clause, append_all, add_cond, query, _select, _insert, _update, _delete, _truncate
-BACKENDS = {
-  raw = function(fn)
-    return fn
-  end,
+local logger = require("lapis.logging")
+local active_connection
+local connect, raw_query
+local BACKENDS = {
   luasql = function()
     local config = require("lapis.config").get()
     local mysql_config = assert(config.mysql, "missing mysql configuration")
@@ -32,16 +30,14 @@ BACKENDS = {
         table.insert(conn_opts, mysql_config.port)
       end
     end
-    conn = assert(luasql:connect(unpack(conn_opts)))
+    active_connection = assert(luasql:connect(unpack(conn_opts)))
     return function(q)
-      if logger then
-        logger.query(q)
-      end
-      local cur = assert(conn:execute(q))
+      logger.query(q)
+      local cur = assert(active_connection:execute(q))
       local has_rows = type(cur) ~= "number"
       local result = {
         affected_rows = has_rows and cur:numrows() or cur,
-        last_auto_id = conn:getlastautoid()
+        last_auto_id = active_connection:getlastautoid()
       }
       if has_rows then
         local colnames = cur:getcolnames()
@@ -101,9 +97,7 @@ BACKENDS = {
     local pool_size = mysql_config.pool_size or 100
     local mysql = require("resty.mysql")
     return function(q)
-      if logger then
-        logger.query(q)
-      end
+      logger.query(q)
       local db = ngx and ngx.ctx.resty_mysql_db
       if not (db) then
         local err
@@ -162,26 +156,22 @@ BACKENDS = {
     end
   end
 }
-set_backend = function(name, ...)
-  local backend = BACKENDS[name]
-  if not (backend) then
-    error("Failed to find MySQL backend: " .. tostring(name))
-  end
-  raw_query = backend(...)
-end
+local set_raw_query
 set_raw_query = function(fn)
   raw_query = fn
 end
+local get_raw_query
 get_raw_query = function()
   return raw_query
 end
+local escape_literal
 escape_literal = function(val)
   local _exp_0 = type(val)
   if "number" == _exp_0 then
     return tostring(val)
   elseif "string" == _exp_0 then
-    if conn then
-      return "'" .. tostring(conn:escape(val)) .. "'"
+    if active_connection then
+      return "'" .. tostring(active_connection:escape(val)) .. "'"
     else
       if ngx then
         return ngx.quote_sql_str(val)
@@ -219,6 +209,7 @@ escape_literal = function(val)
   end
   return error("don't know how to escape value: " .. tostring(val))
 end
+local escape_identifier
 escape_identifier = function(ident)
   if is_raw(ident) then
     return ident[1]
@@ -226,41 +217,35 @@ escape_identifier = function(ident)
   ident = tostring(ident)
   return '`' .. (ident:gsub('`', '``')) .. '`'
 end
-init_logger = function()
-  logger = require("lapis.logging")
-end
-set_logger = function(_logger)
-  logger = _logger
-end
-get_logger = function()
-  return logger
-end
-init_db = function()
+connect = function()
   local config = require("lapis.config").get()
-  local backend = config.mysql and config.mysql.backend
-  if not (backend) then
-    if ngx then
-      backend = "resty_mysql"
+  local backend_name = config.mysql and config.mysql.backend
+  local use_nginx = ngx and ngx.ctx and ngx.socket
+  if not (backend_name) then
+    if use_nginx then
+      backend_name = "resty_mysql"
     else
-      backend = "luasql"
+      backend_name = "luasql"
     end
   end
-  return set_backend(backend)
-end
-connect = function()
-  init_logger()
-  return init_db()
+  local backend = BACKENDS[backend_name]
+  if not (backend) then
+    error("Failed to find MySQL backend: " .. tostring(backend_name))
+  end
+  raw_query = backend()
 end
 raw_query = function(...)
   connect()
   return raw_query(...)
 end
-interpolate_query, encode_values, encode_assigns, encode_clause = build_helpers(escape_literal, escape_identifier)
+local interpolate_query, encode_values, encode_assigns, encode_clause = build_helpers(escape_literal, escape_identifier)
+local append_all
 append_all = function(t, ...)
   for i = 1, select("#", ...) do
     t[#t + 1] = select(i, ...)
   end
 end
+local add_cond
 add_cond = function(buffer, cond, ...)
   append_all(buffer, " WHERE ")
   local _exp_0 = type(cond)
@@ -270,15 +255,18 @@ add_cond = function(buffer, cond, ...)
     return append_all(buffer, interpolate_query(cond, ...))
   end
 end
+local query
 query = function(str, ...)
   if select("#", ...) > 0 then
     str = interpolate_query(str, ...)
   end
   return raw_query(str)
 end
+local _select
 _select = function(str, ...)
   return query("SELECT " .. str, ...)
 end
+local _insert
 _insert = function(tbl, values, ...)
   local buff = {
     "INSERT INTO ",
@@ -288,6 +276,7 @@ _insert = function(tbl, values, ...)
   encode_values(values, buff)
   return raw_query(concat(buff))
 end
+local _update
 _update = function(table, values, cond, ...)
   local buff = {
     "UPDATE ",
@@ -300,6 +289,7 @@ _update = function(table, values, cond, ...)
   end
   return raw_query(concat(buff))
 end
+local _delete
 _delete = function(table, cond, ...)
   local buff = {
     "DELETE FROM ",
@@ -310,19 +300,13 @@ _delete = function(table, cond, ...)
   end
   return raw_query(concat(buff))
 end
+local _truncate
 _truncate = function(table)
   return raw_query("TRUNCATE " .. escape_identifier(table))
 end
-return {
+return setmetatable({
+  __type = "mysql",
   connect = connect,
-  raw = raw,
-  is_raw = is_raw,
-  NULL = NULL,
-  TRUE = TRUE,
-  FALSE = FALSE,
-  list = list,
-  is_list = is_list,
-  is_encodable = is_encodable,
   encode_values = encode_values,
   encode_assigns = encode_assigns,
   encode_clause = encode_clause,
@@ -330,16 +314,14 @@ return {
   query = query,
   escape_literal = escape_literal,
   escape_identifier = escape_identifier,
-  format_date = format_date,
-  init_logger = init_logger,
-  set_backend = set_backend,
   set_raw_query = set_raw_query,
   get_raw_query = get_raw_query,
-  get_logger = get_logger,
-  set_logger = set_logger,
   select = _select,
   insert = _insert,
   update = _update,
   delete = _delete,
-  truncate = _truncate
-}
+  truncate = _truncate,
+  BACKENDS = BACKENDS
+}, {
+  __index = require("lapis.db.base")
+})

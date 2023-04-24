@@ -63,6 +63,9 @@ do
         return 
       end
     end
+    if force_logging == "0" then
+      return 
+    end
     if duration then
       return _print(log_tpl_time:format(prefix, ("%.2fms"):format(duration * 1000), query))
     else
@@ -93,7 +96,7 @@ request = function(r)
     status_color = "yellow"
   end
   local t = "[%{" .. tostring(status_color) .. "}%s%{reset}] %{bright}%{cyan}%s%{reset} - %s"
-  local cmd = tostring(req.cmd_mth) .. " " .. tostring(req.cmd_url)
+  local cmd = tostring(req.method) .. " " .. tostring(req.request_uri)
   return _print(colors(t):format(status, cmd, flatten_params(r.url_params)))
 end
 do

@@ -1,16 +1,21 @@
 
 import insert from table
 
+CONFIG_MODULE = package.loaded["lapis.config_module_name"] or "config"
+
 local *
 
 config_cache = {} -- the final merged config by environment
 configs = {} -- lists of fns/tables to build config by environment
 
 default_config = {
-  server: "nginx"
   port: "8080"
   secret: "please-change-me"
   session_name: "lapis_session"
+  server: "nginx"
+
+  -- TODO: these fields as part of the default config are now deprecated, and
+  -- will be provided in the default generated config with lapis.new
   code_cache: "off"
   num_workers: "1"
 
@@ -128,8 +133,8 @@ get = do
 
     unless loaded_config
       loaded_config = true
-      success, err = pcall -> require "config"
-      unless success or err\match "module 'config' not found"
+      success, err = pcall -> require CONFIG_MODULE
+      unless success or err\match "module '#{CONFIG_MODULE}' not found"
         error err
 
     return config_cache[name] if config_cache[name]

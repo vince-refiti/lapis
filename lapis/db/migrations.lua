@@ -40,7 +40,7 @@ do
     return self:find(tostring(name))
   end
   self.create = function(self, name)
-    return Model.create(self, {
+    return _class_0.__parent.create(self, {
       name = tostring(name)
     })
   end
@@ -60,14 +60,45 @@ create_migrations_table = function(table_name)
   return create_table(table_name, {
     {
       "name",
-      types.varchar
+      types.varchar or types.text
     },
     "PRIMARY KEY(name)"
   })
 end
+local start_transaction
+start_transaction = function()
+  local db = require("lapis.db")
+  local _exp_0 = db.__type
+  if "mysql" == _exp_0 then
+    return db.query("START TRANSACTION")
+  else
+    return db.query("BEGIN")
+  end
+end
+local commit_transaction
+commit_transaction = function()
+  local db = require("lapis.db")
+  return db.query("COMMIT")
+end
+local rollback_transaction
+rollback_transaction = function()
+  local db = require("lapis.db")
+  return db.query("ROLLBACK")
+end
 local run_migrations
-run_migrations = function(migrations, prefix)
+run_migrations = function(migrations, prefix, options)
+  if options == nil then
+    options = { }
+  end
   assert(type(migrations) == "table", "expecting a table of migrations for run_migrations")
+  local dry_run, transaction
+  dry_run, transaction = options.dry_run, options.transaction
+  if dry_run then
+    transaction = transaction or "global"
+  end
+  if transaction == "global" then
+    start_transaction()
+  end
   local entity_exists
   entity_exists = require("lapis.db.schema").entity_exists
   if not (entity_exists(LapisMigrations:table_name())) then
@@ -110,12 +141,29 @@ run_migrations = function(migrations, prefix)
     end
     if not (exists[tostring(name)]) then
       logger.migration(name)
+      if transaction == "individual" then
+        start_transaction()
+      end
       fn(name)
       LapisMigrations:create(name)
+      if transaction == "individual" then
+        if dry_run then
+          rollback_transaction()
+        else
+          commit_transaction()
+        end
+      end
       count = count + 1
     end
   end
-  return logger.migration_summary(count)
+  logger.migration_summary(count)
+  if transaction == "global" then
+    if dry_run then
+      rollback_transaction()
+    else
+      commit_transaction()
+    end
+  end
 end
 return {
   create_migrations_table = create_migrations_table,

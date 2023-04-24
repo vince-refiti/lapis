@@ -3,7 +3,6 @@ import type, tostring, pairs, select from _G
 unpack = unpack or table.unpack
 
 local raw_query, raw_disconnect
-local logger
 
 import
   FALSE
@@ -15,8 +14,12 @@ import
   raw
   is_list
   list
+  is_clause
+  clause
   is_encodable
   from require "lapis.db.base"
+
+logger = require "lapis.logging"
 
 array = (t) ->
   import PostgresArray from require "pgmoon.arrays"
@@ -34,10 +37,6 @@ _is_encodable = (item) ->
 local gettime
 
 BACKENDS = {
-  -- the raw backend is a debug backend that lets you specify the function that
-  -- handles the query
-  raw: (fn) -> fn
-
   pgmoon: ->
     import after_dispatch, increment_perf, set_perf from require "lapis.nginx.context"
 
@@ -45,6 +44,11 @@ BACKENDS = {
     pg_config = assert config.postgres, "missing postgres configuration"
 
     local pgmoon_conn
+
+    measure_performance = not not config.measure_performance
+
+    if measure_performance
+      gettime = require("socket").gettime
 
     _query = (str) ->
       -- cache the connection in the nginx context if true, otherwise it there
@@ -68,7 +72,7 @@ BACKENDS = {
         unless success
           error "postgres failed to connect: #{connect_err}"
 
-        if config.measure_performance
+        if measure_performance
           switch pgmoon.sock_type
             when "nginx"
               set_perf "pgmoon_conn", "nginx.#{pgmoon.sock\getreusedtimes! > 0 and "reuse" or "new"}"
@@ -81,10 +85,7 @@ BACKENDS = {
         else
           pgmoon_conn = pgmoon
 
-      start_time = if config.measure_performance
-        unless gettime
-          gettime = require("socket").gettime
-
+      start_time = if measure_performance
         gettime!
 
       res, err = pgmoon\query str
@@ -93,9 +94,9 @@ BACKENDS = {
         dt = gettime! - start_time
         increment_perf "db_time", dt
         increment_perf "db_count", 1
-        logger.query str, dt if logger
+        logger.query str, dt
       else
-        logger.query str if logger
+        logger.query str
 
       if not res and err
         error "#{str}\n#{err}"
@@ -111,33 +112,11 @@ BACKENDS = {
     _query, _disconnect
 }
 
-set_backend = (name, ...) ->
-  backend = BACKENDS[name]
-  unless backend
-    error "Failed to find PostgreSQL backend: #{name}"
-
-  raw_query, raw_disconnect = backend ...
-
 set_raw_query = (fn) ->
   raw_query = fn
 
 get_raw_query = ->
   raw_query
-
-init_logger = ->
-  logger = require "lapis.logging"
-
-set_logger = (_logger) -> logger = _logger
-get_logger = -> logger
-
-init_db = ->
-  config = require("lapis.config").get!
-  backend = config.postgres and config.postgres.backend
-
-  unless backend
-    backend = "pgmoon"
-
-  set_backend backend
 
 escape_identifier = (ident) ->
   return ident[1] if is_raw ident
@@ -179,11 +158,20 @@ append_all = (t, ...) ->
   for i=1, select "#", ...
     t[#t + 1] = select i, ...
 
--- NOTE: this doesn't actually connect, it just configures the backend. This
--- should be renamed and the interface changed
+-- NOTE: this doesn't actually connect, sets up config for lazy connection on
+-- next query
 connect = ->
-  init_logger!
-  init_db! -- replaces raw_query to default backend
+  config = require("lapis.config").get!
+  backend_name = config.postgres and config.postgres.backend
+
+  unless backend_name
+    backend_name = "pgmoon"
+
+  backend = BACKENDS[backend_name]
+  unless backend
+    error "Failed to find PostgreSQL backend: #{backend_name}"
+
+  raw_query, raw_disconnect = backend!
 
 disconnect = ->
   assert raw_disconnect, "no active connection"
@@ -294,78 +282,6 @@ _truncate = (...) ->
   tables = concat [escape_identifier t for t in *{...}], ", "
   raw_query "TRUNCATE " .. tables .. " RESTART IDENTITY"
 
-parse_clause = do
-  local grammar
-
-  make_grammar = ->
-    basic_keywords = {"where", "having", "limit", "offset"}
-
-    import P, R, C, S, Cmt, Ct, Cg, V from require "lpeg"
-
-    alpha = R("az", "AZ", "__")
-    alpha_num = alpha + R("09")
-    white = S" \t\r\n"^0
-    some_white = S" \t\r\n"^1
-    word = alpha_num^1
-
-    single_string = P"'" * (P"''" + (P(1) - P"'"))^0 * P"'"
-    double_string = P'"' * (P'""' + (P(1) - P'"'))^0 * P'"'
-    strings = single_string + double_string
-
-    -- case insensitive word
-    ci = (str) ->
-      import S from require "lpeg"
-      local p
-
-      for c in str\gmatch "."
-        char = S"#{c\lower!}#{c\upper!}"
-        p = if p
-          p * char
-        else
-          char
-      p * -alpha_num
-
-    balanced_parens = P {
-      P"(" * (V(1) + strings + (P(1) - ")"))^0  * P")"
-    }
-
-    order_by = ci"order" * some_white * ci"by" / "order"
-    group_by = ci"group" * some_white * ci"by" / "group"
-
-    keyword = order_by + group_by
-
-    for k in *basic_keywords
-      part = ci(k) / k
-      keyword += part
-
-    keyword = keyword * white
-    clause_content = (balanced_parens + strings + (word + P(1) - keyword))^1
-
-    outer_join_type = (ci"left" + ci"right" + ci"full") * (white * ci"outer")^-1
-    join_type = (ci"natural" * white)^-1 * ((ci"inner" + outer_join_type) * white)^-1
-    start_join = join_type * ci"join"
-
-    join_body = (balanced_parens + strings + (P(1) - start_join - keyword))^1
-    join_tuple = Ct C(start_join) * C(join_body)
-
-    joins = (#start_join * Ct join_tuple^1) / (joins) -> {"join", joins}
-
-    clause = Ct (keyword * C clause_content)
-    grammar = white * Ct joins^-1 * clause^0
-
-  (clause) ->
-    return {} if clause == ""
-
-    make_grammar! unless grammar
-
-    parsed = if tuples = grammar\match clause
-      { unpack t for t in *tuples }
-
-    if not parsed or (not next(parsed) and not clause\match "^%s*$")
-      return nil, "failed to parse clause: `#{clause}`"
-
-    parsed
-
 encode_case = (exp, t, on_else) ->
   buff = {
     "CASE ", exp
@@ -381,21 +297,27 @@ encode_case = (exp, t, on_else) ->
   concat buff
 
 {
+  __type: "postgres"
+
   :connect
   :disconnect
-  :query, :raw, :is_raw, :list, :is_list, :array, :is_array, :NULL, :TRUE,
-  :FALSE, :escape_literal, :escape_identifier, :encode_values, :encode_assigns,
-  :encode_clause, :interpolate_query, :parse_clause, :format_date,
+  :query
+
+  :raw, :is_raw
+  :list, :is_list
+  :array, :is_array
+  :clause, :is_clause
+
+  :NULL, :TRUE, :FALSE
+
+  :escape_literal, :escape_identifier, :encode_values, :encode_assigns,
+  :encode_clause, :interpolate_query, :format_date,
   :encode_case
 
-  :init_logger
-
-  :set_backend
   :set_raw_query
   :get_raw_query
 
-  :get_logger
-  :set_logger
+  parse_clause: require "lapis.db.postgres.parse_clause"
 
   select: _select
   insert: _insert
@@ -403,4 +325,6 @@ encode_case = (exp, t, on_else) ->
   delete: _delete
   truncate: _truncate
   is_encodable: _is_encodable
+
+  :BACKENDS
 }

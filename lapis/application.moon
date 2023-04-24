@@ -12,7 +12,10 @@ unpack = unpack or table.unpack
 
 local capture_errors, capture_errors_json, respond_to
 
+local Application
+
 MISSING_ROUTE_NAME_ERORR = "Attempted to load action `true` for route with no name, a name must be provided to require the action"
+INVALID_ACTION_TYPE = "Loaded an action that is the wrong type. Actions must be a function or callable table"
 
 run_before_filter = (filter, r) ->
   _write = r.write
@@ -28,12 +31,46 @@ run_before_filter = (filter, r) ->
 load_action = (prefix, action, route_name) ->
   if action == true
     assert route_name, MISSING_ROUTE_NAME_ERORR
-
     require "#{prefix}.#{route_name}"
   elseif type(action) == "string"
     require "#{prefix}.#{action}"
   else
     action
+
+-- test the type of an action
+test_callable = (value) ->
+  switch type value
+    when "function"
+      true
+    when "table"
+      mt = getmetatable(value)
+      mt and mt.__call and true
+
+-- if action is a non-function then we turn it into a function that can
+-- dynamically load the appropraite action via `load_action`
+wrap_action_loader = (action) ->
+  if type(action) == "function"
+    return action
+
+  -- NOTE: the closure on the argument is used as the cache
+  loaded = false
+  =>
+    unless loaded
+      action = load_action @app.actions_prefix, action, @route_name
+      assert test_callable(action), INVALID_ACTION_TYPE
+
+      loaded = true
+
+    action @
+
+-- if obj is a class, then the __base, otherwise obj is an instance and is the
+-- route group
+get_target_route_group = (obj) ->
+  assert obj != Application, "lapis.Application is not able to be modified with routes. You must either subclass or instantiate it"
+  if obj == obj.__class
+    obj.__base
+  else
+    obj
 
 class Application
   Request: require "lapis.request"
@@ -44,18 +81,42 @@ class Application
   actions_prefix: "actions"
   flows_prefix: "flows"
 
-  -- find action for named route in this application
-  @find_action: (name, resolve=true) =>
-    @_named_route_cache or= {}
-    route = @_named_route_cache[name]
+  new: => @build_router!
 
-    -- update the cache
+  @extend: (name, tbl) =>
+    lua = require "lapis.lua"
+
+    if type(name) == "table"
+      tbl = name
+      name = nil
+
+    class_fields = { }
+
+    cls = lua.class name or "ExtendedApplication", tbl, @
+    cls, cls.__base
+
+
+  -- search the route group hierarchy for the action handler that matches the route name
+  -- NOTE: this is a special method that can be called on either the class or the instance
+  find_action: (name, resolve=true) =>
+    route_group = get_target_route_group @
+
+    cache = rawget route_group, "_named_route_cache"
+    unless cache
+      cache = {}
+      route_group._named_route_cache = cache
+
+    route = cache[name]
+
+    -- refresh the entire route cache
     unless route
-      for app_route in pairs @__base
-        if type(app_route) == "table"
-          app_route_name = next app_route
-          @_named_route_cache[app_route_name] = app_route
-          route = app_route if app_route_name == name
+      import each_route from require "lapis.application.route_group"
+      each_route route_group, true, (path) ->
+        if type(path) == "table"
+          route_name = next path
+          unless cache[route_name]
+            cache[route_name] = path
+            route = path if route_name == name
 
     action = route and @[route]
 
@@ -64,100 +125,80 @@ class Application
 
     action, route
 
-  new: =>
-    @build_router!
-
+  -- NOTE: this is a special method that can be called on either the class or the instance
   enable: (feature) =>
+    assert @ != Application, "You tried to enable a feature on the read-only class lapis.Application. You must sub-class it before enabling features"
+
     fn = require "lapis.features.#{feature}"
-    if type(fn) == "function"
+    if test_callable fn
       fn @
 
+  -- add new route to the set of routes
+  -- NOTE: this is a special method that can be called on either the class or the instance
   match: (route_name, path, handler) =>
-    if handler == nil
-      handler = path
-      path = route_name
-      route_name = nil
+    route_group = get_target_route_group(@)
+    import add_route from require "lapis.application.route_group"
+    add_route route_group, route_name, path, handler
+    if route_group == @
+      @router = nil
 
-    @ordered_routes or= {}
-    key = if route_name
-      tuple = @ordered_routes[route_name]
-      if old_path = tuple and tuple[next(tuple)]
-        if old_path != path
-          error "named route mismatch (#{old_path} != #{path})"
-
-      if tuple
-        tuple
-      else
-        tuple = {[route_name]: path}
-        @ordered_routes[route_name] = tuple
-        tuple
-    else
-      path
-
-    unless @[key]
-      insert @ordered_routes, key
-
-    @[key] = handler
-
-    @router = nil
-    handler
-
+  -- dynamically create methods for common HTTP verbs
   for meth in *{"get", "post", "delete", "put"}
     upper_meth = meth\upper!
+
     @__base[meth] = (route_name, path, handler) =>
+      @router = nil
       if handler == nil
         handler = path
         path = route_name
         route_name = nil
 
-      @responders or= {}
-      existing = @responders[route_name or path]
-
       if type(handler) != "function"
-        -- NOTE: this works slightly differently, as it loads the action
-        -- immediately instead of lazily, how it happens in wrap_handler. This
-        -- is okay for now as we'll likely be overhauling this interface
-        handler = load_action @actions_prefix, handler, route_name
+        handler = wrap_action_loader handler
 
-      tbl = { [upper_meth]: handler }
+      route_group = get_target_route_group(@)
+      import add_route_verb from require "lapis.application.route_group"
+      add_route_verb route_group, respond_to, upper_meth, route_name, path, handler
+      if route_group == @
+        @router = nil
 
-      if existing
-        setmetatable tbl, __index: (key) =>
-          existing if key\match "%u"
-
-      responder = respond_to tbl
-      @responders[route_name or path] = responder
-      @match route_name, path, responder
+  -- Add before filter `fn` to __base
+  before_filter: (fn) =>
+    route_group = get_target_route_group(@)
+    import add_before_filter from require "lapis.application.route_group"
+    add_before_filter route_group, fn
 
   build_router: =>
     @router = Router!
     @router.default_route = => false
 
-    add_route = (path, handler) ->
-      t = type path
-      if t == "table" or t == "string" and path\match "^/"
-        @router\add_route path, @wrap_handler handler
+    import each_route from require "lapis.application.route_group"
 
-    add_routes = (cls) ->
-      for path, handler in pairs cls.__base
-        add_route path, handler
+    -- this will hold both paths and route names to prevent them from being
+    -- redeclared by paths lower in precedence
+    filled_routes = {}
 
-      if ordered = @ordered_routes
-        for path in *ordered
-          add_route path, @[path]
+    each_route @, true, (path, handler) ->
+      route_name, path_string = if type(path) == "table"
+        next(path), path[next path]
       else
-        for path, handler in pairs @
-          add_route path, handler
+        nil, path
 
-      if parent = cls.__parent
-        add_routes parent
+      if route_name
+        return if filled_routes[route_name]
+        filled_routes[route_name] = true
 
-    add_routes @@
+      return if filled_routes[path_string]
+      filled_routes[path_string] = true
 
-  -- this performs the initialization of an action (called handler in this
-  -- file)
-  -- the wrapped action is stored in the router so it can be returned directly
-  -- when the router is matched
+      @router\add_route path, @wrap_handler handler
+
+    @router
+
+  -- this creates the callback for the router by wrapping the action defined by
+  -- the application. It sets up parameters generated by the router and copies
+  -- them into the request. Additionally, any lazy-loaded actions are converted
+  -- if necessary.
   wrap_handler: (handler) =>
     (params, path, name, r) ->
       support = r.__class.support
@@ -175,6 +216,7 @@ class Application
 
         if type(handler) != "function"
           handler = load_action @actions_prefix, handler, name
+          assert test_callable(handler), INVALID_ACTION_TYPE
 
         \write handler r
 
@@ -206,21 +248,21 @@ class Application
   dispatch: (req, res) =>
     local err, trace, r
 
-    capture_error = (_err) ->
-      err = _err
-      trace = debug.traceback "", 2
+    success = xpcall(
+      ->
+        r = @.Request @, req, res
 
-    raw_request = ->
-      r = @.Request @, req, res
+        unless @router\resolve req.parsed_url.path, r
+          -- run default route if nothing matched
+          handler = @wrap_handler @default_route
+          handler {}, nil, "default_route", r
 
-      unless @router\resolve req.parsed_url.path, r
-        -- run default route if nothing matched
-        handler = @wrap_handler @default_route
-        handler {}, nil, "default_route", r
+        @render_request r
 
-      @render_request r
-
-    success = xpcall raw_request, capture_error
+      (_err) ->
+        err = _err
+        trace = debug.traceback "", 2
+    )
 
     unless success
       -- create a new request to handle the rendering the error
@@ -230,26 +272,26 @@ class Application
 
     success, r
 
-  @before_filter: (...) =>
-    @__base.before_filter @__base, ...
-
-  before_filter: (fn) =>
-    unless rawget @, "before_filters"
-      @before_filters = {}
-
-    insert @before_filters, fn
-
   -- copies all actions into this application, preserves before filters
   -- other app can just be a plain table, doesn't have to be another application
   -- @include other_app, path: "/hello", name: "hello_"
-  @include: (other_app, opts, into=@__base) =>
+  include: (other_app, opts) =>
+    into = get_target_route_group @
+
+    if into == @ -- purge the route cache if it exists
+      @router = nil
+
     if type(other_app) == "string"
       other_app = require other_app
 
     path_prefix = opts and opts.path or other_app.path
     name_prefix = opts and opts.name or other_app.name
 
-    for path, action in pairs other_app.__base
+    source = get_target_route_group other_app
+
+    import each_route from require "lapis.application.route_group"
+
+    each_route source, true, (path, action) ->
       t = type path
       -- named action
       if t == "table"
@@ -267,7 +309,7 @@ class Application
           path = path_prefix .. path
       -- other field in class, ignore
       else
-        continue
+        return
 
       if name_prefix
         -- normalize and adjust lazy loaded actions
@@ -277,15 +319,18 @@ class Application
           assert type(path) == "table", "include: #{MISSING_ROUTE_NAME_ERORR}"
           action = next(path) -- the route name is the only key in the table
 
-      if before_filters = other_app.before_filters
-        fn = action
+      -- embed the before filters into the action
+      if before_filters = source.before_filters
+        original_action = wrap_action_loader action
         action = (r) ->
           for filter in *before_filters
             return if run_before_filter filter, r
 
-          load_action(r.app.actions_prefix, fn, r.route_name) r
+          original_action r
 
       into[path] = action
+
+    return
 
   -- Callbacks
   -- run with Request as self, instead of application
@@ -301,7 +346,7 @@ class Application
       @app.handle_404 @
 
   handle_404: =>
-    error "Failed to find route: #{@req.cmd_url}"
+    error "Failed to find route: #{@req.request_uri}"
 
   handle_error: (err, trace) =>
     @status = 500
@@ -309,7 +354,7 @@ class Application
     @trace = trace
 
     {
-      status: 500
+      status: @status
       layout: false
       render: @app.error_page
     }
@@ -366,7 +411,7 @@ capture_errors_json = (fn) ->
     json: { errors: @errors }
   }
 
-yield_error = (msg) ->
+yield_error = (msg="unknown error") ->
   coroutine.yield "error", {msg}
 
 assert_error = (thing, msg, ...) ->

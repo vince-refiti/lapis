@@ -9,8 +9,12 @@ value_table = { hello: "world", age: 34 }
 
 import sorted_pairs from require "spec.helpers"
 
-tests = {
+TESTS = {
   -- lapis.db.postgres
+  {
+    -> db.format_date 0
+    "1970-01-01 00:00:00"
+  }
   {
     -> db.escape_identifier "dad"
     '"dad"'
@@ -54,6 +58,11 @@ tests = {
   }
 
   {
+    -> db.interpolate_query "select from dogs where ?", db.clause { color: "blue" }
+    [[select from dogs where "color" = 'blue']]
+  }
+
+  {
     -> db.escape_literal db.array {1,2,3,4,5}
     "ARRAY[1,2,3,4,5]"
   }
@@ -65,14 +74,14 @@ tests = {
 
   {
     -> db.encode_values(value_table)
-    [[("hello", "age") VALUES ('world', 34)]]
     [[("age", "hello") VALUES (34, 'world')]]
+    [[("hello", "age") VALUES ('world', 34)]]
   }
 
   {
     -> db.encode_assigns(value_table)
-    [["hello" = 'world', "age" = 34]]
     [["age" = 34, "hello" = 'world']]
+    [["hello" = 'world', "age" = 34]]
   }
 
   {
@@ -87,9 +96,196 @@ tests = {
 
   {
     -> db.encode_clause cool: true, id: db.list {1,2,3,5}
-    [["id" IN (1, 2, 3, 5) AND "cool" = TRUE]]
     [["cool" = TRUE AND "id" IN (1, 2, 3, 5)]]
+    [["id" IN (1, 2, 3, 5) AND "cool" = TRUE]]
   }
+
+  {
+    -> db.encode_clause db.clause {
+      "5 < 2"
+      {"height > ?", 443}
+    }
+    "(5 < 2) AND (height > 443)"
+  }
+
+  {
+    -> db.encode_clause db.clause { }, allow_empty: true
+    ""
+  }
+
+  {
+    -> db.encode_clause db.clause { }, allow_empty: true, prefix: "WHERE"
+    ""
+  }
+
+  {
+    -> db.encode_clause db.clause { id: 10 }, allow_empty: true, prefix: "WHERE"
+    [[WHERE "id" = 10]]
+  }
+
+  {
+    -> db.encode_clause db.clause {
+      a: "two"
+      b: true
+      c: false
+      d: db.NULL
+      [db.raw "something.zone"]: db.list {1,2,3}
+    }, table_name: "blimp"
+    [["blimp"."a" = 'two' AND "blimp"."b" AND NOT "blimp"."c" AND "blimp"."d" IS NULL AND something.zone IN (1, 2, 3)]]
+  }
+
+  {
+    ->
+      db.encode_clause db.clause {
+        skipped: true
+        db.clause {
+          one: "two"
+          zone: true
+        }
+
+        if false
+          "this won't make it in"
+
+        db.clause {
+          a: "men"
+          {"age > ?", 0.230}
+        }
+      }, operator: "OR", table_name: "users"
+
+    [[("one" = 'two' AND "zone") OR ((age > 0.23) AND "a" = 'men') OR "users"."skipped"]]
+  }
+
+  {
+    ->
+      db.encode_clause db.clause {
+        {"INNER JOIN things ON ?", db.clause {
+          "things.user_id = id"
+          deleted: false
+          status: db.list {1,2,3}
+        }, table_name: "things"}
+
+        {"WHERE ?", db.clause eggs: "ham"}
+
+        "LIMIT 100"
+        "OFFSET 99"
+      }, operator: false
+
+    [[INNER JOIN things ON (things.user_id = id) AND NOT "things"."deleted" AND "things"."status" IN (1, 2, 3) WHERE "eggs" = 'ham' LIMIT 100 OFFSET 99]]
+  }
+
+  {
+    ->
+      db.encode_clause db.clause {
+        "one"
+        "two"
+        "three"
+      }, operator: ","
+    "one, two, three"
+  }
+
+  {
+    ->
+      db.encode_clause db.clause {
+        db.clause {
+          color: "blue"
+          age: 99
+        }
+        db.clause {
+          sigma: true
+          gold: db.NULL
+        }, operator: "OR"
+        db.clause {
+          status: "spam"
+          delta: false
+          db.clause {
+            used_count: 0
+            prefix: "zup_"
+          }, operator: "OR"
+        }
+      }
+    [["age" = 99 AND "color" = 'blue' AND ("gold" IS NULL OR "sigma") AND ("prefix" = 'zup_' OR "used_count" = 0) AND NOT "delta" AND "status" = 'spam']]
+  }
+
+  {
+    ->
+      db.encode_clause db.clause {
+        db.clause {
+          color: "blue"
+          age: 99
+        }, operator: "OR"
+        db.clause {
+          sigma: true
+          gold: db.NULL
+        }, operator: "AND"
+        db.clause {
+          status: "spam"
+          delta: false
+          db.clause {
+            used_count: 0
+            prefix: "zup_"
+          }, operator: "AND"
+        }, operator: "OR"
+      }, operator: "OR"
+    [["age" = 99 OR "color" = 'blue' OR ("gold" IS NULL AND "sigma") OR ("prefix" = 'zup_' AND "used_count" = 0) OR NOT "delta" OR "status" = 'spam']]
+  }
+
+  {
+    ->
+      db.encode_clause db.clause {
+        db.clause {
+          color: "blue"
+          age: 99
+        }, operator: "OR"
+        db.clause {
+          sigma: true
+          gold: db.NULL
+        }, operator: "AND"
+        db.clause {
+          status: "spam"
+          delta: false
+          db.clause {
+            used_count: 0
+            prefix: "zup_"
+          }, operator: "AND"
+        }, operator: "OR"
+      }, operator: "AND"
+    [[("age" = 99 OR "color" = 'blue') AND "gold" IS NULL AND "sigma" AND (("prefix" = 'zup_' AND "used_count" = 0) OR NOT "delta" OR "status" = 'spam')]]
+  }
+
+  {
+    -> db.encode_clause {
+      [db.list {"a", "b"}]: db.list {
+        db.list {1,2}
+        db.list {3,4}
+      }
+    }
+    [[("a", "b") IN ((1, 2), (3, 4))]]
+  }
+
+  {
+    -> db.encode_clause {
+      [db.list {db.raw("a"), db.raw("b")}]: db.raw "(1, 2)"
+    }
+    [[(a, b) = (1, 2)]]
+  }
+
+  {
+    -> db.encode_clause db.clause {
+      [db.list {"a", "b"}]: db.list {
+        db.list {1,2}
+        db.list {3,4}
+      }
+    }
+    [[("a", "b") IN ((1, 2), (3, 4))]]
+  }
+
+  {
+    -> db.encode_clause db.clause {
+      [db.list {db.raw("a"), db.raw("b")}]: db.raw "(1, 2)"
+    }
+    [[(a, b) = (1, 2)]]
+  }
+
 
   {
     -> db.interpolate_query "update items set x = ?", db.raw"y + 1"
@@ -108,9 +304,14 @@ tests = {
   }
 
   {
+    -> db.select "* from things where ?", db.clause { deleted: false, "height < 5"}
+    [[SELECT * from things where (height < 5) AND NOT "deleted"]]
+  }
+
+  {
     -> db.insert "cats", age: 123, name: "catter"
-    [[INSERT INTO "cats" ("name", "age") VALUES ('catter', 123)]]
     [[INSERT INTO "cats" ("age", "name") VALUES (123, 'catter')]]
+    [[INSERT INTO "cats" ("name", "age") VALUES ('catter', 123)]]
   }
 
   {
@@ -130,14 +331,14 @@ tests = {
 
   {
     -> db.update "cats", { color: "red" }, { weight: 1200, length: 392 }
-    [[UPDATE "cats" SET "color" = 'red' WHERE "weight" = 1200 AND "length" = 392]]
     [[UPDATE "cats" SET "color" = 'red' WHERE "length" = 392 AND "weight" = 1200]]
+    [[UPDATE "cats" SET "color" = 'red' WHERE "weight" = 1200 AND "length" = 392]]
   }
 
   {
     -> db.update "cats", { color: "red" }, { weight: 1200, length: 392 }, "weight", "color"
-    [[UPDATE "cats" SET "color" = 'red' WHERE "weight" = 1200 AND "length" = 392 RETURNING "weight", "color"]]
     [[UPDATE "cats" SET "color" = 'red' WHERE "length" = 392 AND "weight" = 1200 RETURNING "weight", "color"]]
+    [[UPDATE "cats" SET "color" = 'red' WHERE "weight" = 1200 AND "length" = 392 RETURNING "weight", "color"]]
   }
 
   {
@@ -146,8 +347,41 @@ tests = {
   }
 
   {
+    -> db.update "cats", { age: db.NULL }, db.clause { "not deleted" }
+    [[UPDATE "cats" SET "age" = NULL WHERE (not deleted)]]
+  }
+
+  {
+    -> db.update "cats", { color: "green" }
+    [[UPDATE "cats" SET "color" = 'green']]
+  }
+
+  {
+    ->
+      assert.has_error(
+        -> db.update "cats", { color: "blue" }, {}
+        "db.encode_clause: passed an empty table"
+      )
+
+      true
+
+    true
+  }
+
+  {
     -> db.delete "cats"
     [[DELETE FROM "cats"]]
+  }
+
+  {
+    ->
+      assert.has_error(
+        -> db.delete "cats", {}
+        "db.encode_clause: passed an empty table"
+      )
+      true
+
+    true
   }
 
   {
@@ -161,9 +395,19 @@ tests = {
   }
 
   {
+    -> db.delete "cats", db.clause { name: "dump" }
+    [[DELETE FROM "cats" WHERE "name" = 'dump']]
+  }
+
+  {
+    -> db.delete "cats", db.clause({doddy: db.NULL}), "a", "b"
+    [[DELETE FROM "cats" WHERE "doddy" IS NULL RETURNING "a", "b"]]
+  }
+
+  {
     -> db.delete "cats", name: "rump", dad: "duck"
-    [[DELETE FROM "cats" WHERE "name" = 'rump' AND "dad" = 'duck']]
     [[DELETE FROM "cats" WHERE "dad" = 'duck' AND "name" = 'rump']]
+    [[DELETE FROM "cats" WHERE "name" = 'rump' AND "dad" = 'duck']]
   }
 
   {
@@ -184,14 +428,14 @@ tests = {
 
   {
     -> db.insert "cats", { age: 123, name: "catter" }, "age"
-    [[INSERT INTO "cats" ("name", "age") VALUES ('catter', 123) RETURNING "age"]]
     [[INSERT INTO "cats" ("age", "name") VALUES (123, 'catter') RETURNING "age"]]
+    [[INSERT INTO "cats" ("name", "age") VALUES ('catter', 123) RETURNING "age"]]
   }
 
   {
     -> db.insert "cats", { age: 123, name: "catter" }, "age", "name"
-    [[INSERT INTO "cats" ("name", "age") VALUES ('catter', 123) RETURNING "age", "name"]]
     [[INSERT INTO "cats" ("age", "name") VALUES (123, 'catter') RETURNING "age", "name"]]
+    [[INSERT INTO "cats" ("name", "age") VALUES ('catter', 123) RETURNING "age", "name"]]
   }
 
   {
@@ -625,13 +869,19 @@ END]]
 
 local old_query_fn
 describe "lapis.db.postgres", ->
-  setup ->
-    old_query_fn = db.set_backend "raw", (q) -> q
+  sorted_pairs!
+  local snapshot
 
-  teardown ->
-    db.set_backend "raw", old_query_fn
+  before_each ->
+    snapshot = assert\snapshot!
+    -- make the query function just return the query so we can test what is
+    -- generated
+    stub(db.BACKENDS, "pgmoon").returns (q) -> q
 
-  for group in *tests
+  after_each ->
+    snapshot\revert!
+
+  for idx, group in ipairs TESTS
     it "should match", ->
       output = group[1]!
       if #group > 2
@@ -639,10 +889,27 @@ describe "lapis.db.postgres", ->
       else
         assert.same group[2], output
 
+  describe "db.clause", ->
+    it "fails to create clause from object with a metatable", ->
+      assert.has_error(
+        -> db.clause setmetatable {}, {}
+        "db.clause: attempted to create clause from object that has metatable"
+      )
+
+    it "fails to encode empty clause", ->
+      assert.has_error(
+        -> db.encode_clause db.clause {}
+        "db.encode_clause: passed an empty clause (use allow_empty: true to permit empty clause)"
+      )
+
+      assert.has_error(
+        -> db.encode_clause db.clause {
+          db.clause {}
+        }
+        "db.encode_clause: passed an empty clause (use allow_empty: true to permit empty clause)"
+      )
 
   describe "encode_assigns", ->
-    sorted_pairs!
-
     it "writes output to buffer", ->
       buffer = {"hello"}
 
@@ -668,14 +935,12 @@ describe "lapis.db.postgres", ->
 
       assert.has_error(
         -> db.encode_assigns {}, buffer
-        "encode_assigns passed an empty table"
+        "db.encode_assigns: passed an empty table"
       )
 
       assert.same { "hello" }, buffer
 
   describe "encode_clause", ->
-    sorted_pairs!
-
     it "writes output to buffer", ->
       buffer = {"hello"}
 
@@ -697,14 +962,12 @@ describe "lapis.db.postgres", ->
 
       assert.has_error(
         -> db.encode_clause {}, buffer
-        "encode_clause passed an empty table"
+        "db.encode_clause: passed an empty table"
       )
 
       assert.same { "hello" }, buffer
 
   describe "encode_values", ->
-    sorted_pairs!
-
     it "writes output to buffer", ->
       buffer = {"hello"}
 
@@ -728,7 +991,7 @@ describe "lapis.db.postgres", ->
 
       assert.has_error(
         -> db.encode_values {}, buffer
-        "encode_values passed an empty table"
+        "db.encode_values: passed an empty table"
       )
 
       assert.same { "hello" }, buffer

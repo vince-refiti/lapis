@@ -1,4 +1,7 @@
 
+-- NOTE: do not require config dependent modules on the top level here, eg.
+-- lapis.db
+
 import assert_env from require "lapis.environment"
 
 unpack = unpack or table.unpack

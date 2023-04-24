@@ -12,17 +12,18 @@ that table.
 The most primitive model is a blank model:
 
 
-```lua
-local Model = require("lapis.db.model").Model
-
-local Users = Model:extend("users")
-```
-
-```moon
+$dual_code{
+moon = [[
 import Model from require "lapis.db.model"
 
 class Users extends Model
-```
+]],
+lua = [[
+local Model = require("lapis.db.model").Model
+
+local Users = Model:extend("users")
+]]
+}
 
 <p class="for_lua">
 The first argument to <code>extend</code> is the name of the table to associate
@@ -42,11 +43,62 @@ the database. You do not need to manually specify the names of the columns.  If
 you have any relationships, though, you can specify them using the
 [`relations` property](#relations).
 
+## Custom Methods
+
+The model system in Lapis implements an object-oriented interface for working
+with tables and rows from your database.
+
+When you `extend` the base Model class you get a new model class that you can
+customize for your use. This includes adding your own properties and methods to
+the Model class and instances of that model.
+
+<p class="for_lua">
+
+The `extend` method on the base model class returns a second value: the
+instance metatable. You can use this table to add new methods & properties to
+instances of the model, aka rows fetched by that model.
+
+</p>
+
+$dual_code{
+moon = [[
+class Users extends Model
+  get_display_name: =>
+    @display_name or @username
+
+some_user = Users\find 1
+print some_user\get_display_name!
+]],
+lua = [[
+local Users, Users_mt = Model.extend("users")
+
+-- this method will be available on all User instances
+function Users_mt:get_display_name()
+  return self.display_name or self.username
+end
+
+
+local some_user = Users:find(1)
+print(some_user:get_display_name())
+]]
+}
+
+To recap: the Model class object and the Model's metatable are two distinct
+objects. The metatable object is strictly for adding methods and properties to
+instances of the model. Adding a method to the Model itself, will only make it
+available on the Model class, and not for any rows.
+
+You can even use the ability to add custom methods to implement interfaces that
+may be used by other parts of Lapis. For example, you can make model instances
+capable of generating their own URLs when passed to
+[`request:url_for`](actions.html#request-object-methods/request:url_for) by
+implementing a [`url_params`
+method](actions.html#request-object-methods/request:url_for/passing-an-object-to-url-for).
+
 ## Primary Keys
 
 By default all models expect the table to have a primary key called`"id"`. This
-can be changed by setting the <span class="for_moon">`@primary_key`</span><span
-class="for_lua">`self.primary_key`</span> class variable.
+can be changed by setting the $self_ref{"primary_key"} field on the class.
 
 
 ```lua
@@ -102,7 +154,7 @@ class Tags extends Model
   @primary_key: {"user_id", "tag"}
 ```
 
-### `find(...)`
+### `Model:find(...)`
 
 The `find` class method fetches a single row from the table by some condition.
 Pass the values of the primary keys you want to look up by in the order
@@ -112,15 +164,10 @@ specified by the `primary_keys` assigned in the Model's class.
 > default. For those models, `find` would take one argument, the value of `id`.
 
 
-```lua
-local user = Users:find(23232)
-local tag = Tags:find(1234, "programmer")
-```
-
-```moon
+$dual_code{[[
 user = Users\find 23232
 tag = Tags\find 1234, "programmer"
-```
+]]}
 
 ```sql
 SELECT * from "users" where "id" = 23232 limit 1
@@ -132,13 +179,9 @@ SELECT * from "tags" where "user_id" = 1234 and "tag" = 'programmer' limit 1
 An alternate way of calling find is to pass a table as the first argument. The
 table will be converted to a `WHERE` clause in the query:
 
-```lua
-local user = Users:find({ email = "person@example.com" })
-```
-
-```moon
+$dual_code{[[
 user = Users\find email: "person@example.com"
-```
+]]}
 
 ```sql
 SELECT * from "users" where "email" = 'person@example.com' limit 1
@@ -148,79 +191,76 @@ Like all database finders, you are free to use `db.raw` to embed raw SQL. For
 example, you might perform a case insensitive email search like so:
 
 
-```lua
-local user = Users:find({ [db.raw("lower(email)")] = some_email:lower() })
-```
-
-```moon
+$dual_code{[[
 user = Users\find [db.raw "lower(email)"]: some_email\lower!
-```
+]]}
 
 ```sql
 SELECT * from "users" where lower(email) = 'person@example.com' limit 1
 ```
 
-### `select(query, ...)`
+### `Model:select(query, ...)`
 
 When searching for multiple rows the `select` class method is used. It works
 similarly to the [`select` function from the raw query
 interface](database.html#query-interface-selectquery-params) except you specify
 the part of the query after the list of columns to select.
 
-```lua
-local tags = Tags:select("where tag = ?", "merchant")
-```
-
-```moon
+$dual_code{[[
 tags = Tags\select "where tag = ?", "merchant"
-```
+]]}
 
 ```sql
 SELECT * from "tags" where tag = 'merchant'
 ```
 
-Instead of a single instance, an array table of instances is returned. If there
-are no matching rows an empty table is returned.
+The `query` argument can also be a `db.clause` object.
 
-If you want to restrict which columns are selected, you can pass in a table as
-the last argument with the `fields` key set:
+Returns a plain Lua array table of model instances for each row returned from
+the query. If there are no matching rows an empty table is returned.
 
-```lua
-local tags = Tags:select("where tag = ?", "merchant", { fields = "created_at as c" })
-```
+The final argument can optionally be a plain Lua table which can contain the
+following options:
 
-```moon
-tags = Tags\select "where tag = ?", "merchant", fields: "created_at as c"
-```
+$options_table{
+  {
+    name = "fields",
+    description = [[
+      A SQL fragment used for the list of fields to return from the query. Do
+      not use untrusted strings otherwise you may be vulnerable to SQL
+      injection. Use
+      [`db.escape_identifier`](database.html#query-interface/escape_identifier)
+      to escape column names.
+    ]],
+    default = [[`"*"`]],
+    example = $dual_code{[[
+      tags = Tags\select "where tag = ?", "merchant", fields: "created_at as c"
+    ]]}
+  },
+  {
+    name = "load",
+    description = [[
+      Override the model to load each selected row as, Passing `false` to load
+      will return the results unaffected, as plain Lua tables.
+    ]]
+  }
+}
 
-```sql
-SELECT created_at as c from "tags" where tag = 'merchant'
-```
-
-The `fields` option is inserted into the SQL statement as is, so do not use
-untrusted strings otherwise you may be vulnerable to SQL injection. Use
-[`db.escape_identifier`](database.html#query-interface/escape_identifier) to
-escape column names.
-
-You can use the `load` option to change what model each result of the query is
-loaded as. By default it will convert each row to an instance of the model that
-is calling the `select` method. Passing `false` to load will return the results
-unaffected, as plain Lua tables.
-
-### `find_all(primary_keys)`
+### `Model:find_all(primary_keys)`
 
 If you want to find many rows by their primary key you can use the `find_all`
 method. It takes an array table of primary keys. This method only works on
 tables that have singular primary keys unless you explicitly pass a column to
 search by.
 
-```lua
-local users = Users:find_all({ 1,2,3,4,5 })
-```
-
-```moon
+$dual_code{
+moon = [[
 users = Users\find_all { 1,2,3,4,5 }
-```
+]],
+lua = [[
+local users = Users:find_all({ 1,2,3,4,5 })
+]]
+}
 
 ```sql
 SELECT * from "users" where "id" in (1, 2, 3, 4, 5)
@@ -230,13 +270,13 @@ If you need to find many rows for another column other than the primary key you
 can pass in the optional second argument:
 
 
-```lua
-local users = UserProfile:find_all({ 1,2,3,4,5 }, "user_id")
-```
-
-```moon
+$dual_code{
+moon = [[
 users = UserProfile\find_all { 1,2,3,4,5 }, "user_id"
-```
+]],
+lua = [[
+local users = UserProfile:find_all({ 1,2,3,4,5 }, "user_id")
+]]}
 
 ```sql
 SELECT * from "UserProfile" where "user_id" in (1, 2, 3, 4, 5)
@@ -292,32 +332,36 @@ users = UserProfile\find_all {1,2,3,4}, {
 SELECT user_id, twitter_account from "things" where "user_id" in (1, 2, 3, 4) and "public" = TRUE
 ```
 
-### `count(clause, ...)`
+### `Model:count(clause, ...)`
 
-Counts the number of records in the table that match the clause.
+Counts the number of records in the table that match the clause. The `clause`
+arugment can either be a string, or a `db.clause` object. If a string is
+passed, then it will be automatically prepended with the substring `"WHERE "`,
+and will be interpolated with `db.interpolate_query` with the remaining
+arguments.
 
-```lua
-local total = Users:count()
-local count = Users:count("username like '%' || ? || '%'", "leafo")
-```
+If `clause` is not providsed (or is `nil`), then every row in the table will be
+counted.
 
-```moon
+$dual_code{
+moon=[[
 total = Users\count!
 count = Users\count "username like '%' || ? || '%'", "leafo"
-```
+]]}
+
 
 ```sql
 SELECT COUNT(*) "users"
 SELECT COUNT(*) "users" where username like '%' || 'leafo' || '%'
 ```
 
-### `create(values, create_opts=nil)`
+### `Model:create(values, create_opts=nil)`
 
 The `create` class method is used to create new rows. It takes a table of
 column values to create the row with. It returns an instance of the model. The
 create query fetches the values of the primary keys and sets them on the
-instance using the PostgreSQL `RETURNING` statement. This is useful for getting
-the value of an auto-incrementing key from the insert statement.
+instance using SQL `RETURNING` clause. This is useful for getting the value of
+an auto-incrementing key from the insert statement.
 
 > In MySQL the *last insert id* is used to get the id of the row since the
 > `RETURNING` statement is not available.
@@ -367,8 +411,7 @@ VALUES ((select coalesce(max(position) + 1, 0) from users))
 RETURNING "id", "position"
 ```
 
-> Since `RETURNING` is not available in MySQL, this functionality is PostgreSQL
-> specific.
+> `RETURNING` is not available in MySQL
 
 If your model has any [constraints](#constraints) they will be checked before trying to create
 a new row. If a constraint fails then `nil` and the error message are returned
@@ -389,22 +432,19 @@ $options_table{
   }
 }
 
-### `columns()`
+### `Model:columns()`
 
-Returns all the columns on the table. Returns an array of tables that contain
-column names and their types.
+Returns an array of details about each column the table has. Each item in the
+array is a table with the name, `column_name`, and the column type,
+`data_type`.
 
-```lua
-local cols = Users:columns()
-```
-
-```moon
+$dual_code{[[
 cols = Users\columns!
-```
+]]}
+
 
 ```sql
-SELECT column_name, data_type
-  FROM information_schema.columns WHERE table_name = 'users'
+SELECT column_name, data_type FROM information_schema.columns WHERE table_name = 'users'
 ```
 
 The output might look like this:
@@ -436,9 +476,10 @@ The output might look like this:
 }
 ```
 
-> MySQL will return a slightly different format, but will contain the same information.
+> This example is pulled from PostgreSQL. The format from MySQL and SQLite will
+> be slightly different
 
-### `table_name()`
+### `Model:table_name()`
 
 Returns the name of the table backed by the model.
 
@@ -461,7 +502,7 @@ class Users extends Model
   @table_name: => "active_users"
 ```
 
-### `singular_name()`
+### `Model:singular_name()`
 
 Returns the singular name of the table.
 
@@ -480,7 +521,7 @@ the field is when loading rows with `include_in`. It's also used when
 determining the foreign key column name with a `has_one` or `has_many`
 relation.
 
-### `include_in(objects, key, opts={})`
+### `Model:include_in(objects, key, opts={})`
 
 Bulk load rows of the model into an array of objects (often the array of
 objects is an array of instances of another model). This is used to preload
@@ -493,6 +534,12 @@ either derived from the model's table name, or manually specified via an
 option.
 
 Returns the `objects` array table.
+
+> It's possible for `include_in` to assign the same reference to different
+> items in `objects.` The query will fetch only unique rows that meet the
+> requirement. As an example, if you are preloading the `author` for many
+> `posts`, and they all share the same `author_id`, then only one `author` will
+> be fetched, and the same reference will be assigned to every `post`.
 
 This is a lower level interface for preloading data on models. In general we
 recommend [using relations](#relations) if possible. A relation
@@ -555,6 +602,24 @@ $options_table{
   {
     name = "group",
     description = "group by clause. Taken as a raw SQL clause"
+  },
+  {
+    name = "loaded_results_callback",
+    description = [[
+      A callback function to be called with one argument, the resulting array
+      from the query generated by `include_in`. Each row of the result array will
+      have been loaded as the target model, unless loading is disabled with `{
+      load = false }`. This can be used to add custom preloading logic to the
+      objects found with `include_in`. Note that this will return only the number
+      of results fetched. It's possible for the items in `objects` to point to
+      the same fetched row.
+    ]],
+    example = dual_code{[[
+      Users\include_in posts, "user_id", {
+        loaded_results_callback: (users) ->
+          print "Found", #users, "users"
+      }
+    ]]}
   },
   {
     name = "flip",
@@ -728,13 +793,47 @@ Each `users` object will now have a `posts` field that is an array containing
 all the associated posts that were found. (Note that `posts` is a plural
 derived field name when `many` is true.)
 
-### `paginated(query, ...)`
+### `Model:paginated(query, ...)`
 
 Similar to `select` but returns a `Paginator`. Read more in [Pagination](#pagination).
 
+### `Model:get_relation_model(name)`
+
+
+This method is used to look up the model for a relation by the name specified
+in the relation. By default the following function is provided:
+
+$dual_code{[[
+get_relation_model = (name) =>
+  require("models")[name]
+]]}
+
+If your model has relations that are pulled from other sources than the
+`models` module, then you can overwrite this method to handle loading the
+models for those relations.
+
+### `Model:extend(table_name, fields={})`
+
+Creates a new subclass of the `Model` base class. The `fields` argument is a
+table of properties that will be copied into the instance metatable of the
+newly created class.
+
+The fields named "primary_key", "timestamp", "constraints", "relations" will be
+copied into the model class object instead of the instance. Relations must be
+set in `fields` in order for the auto-generated methods to be created.
+
+This method returns the newly created class object, followed by the instance
+metatable.
+
+The instance metatable can be used as an alternative syntax to add new methods
+to model instances.
+
 ## Instance Methods
 
-### `update(..., opts={})`
+When extending the base Model class, you should avoid overriding any of the
+built in methods to avoid unexpected issues.
+
+### `model:update(..., opts={})`
 
 Generate and issue a query to update the row backed by the instance of the
 model. The values of the primary keys specified by the model's class are used
@@ -842,68 +941,84 @@ $options_table{
   }
 }
 
-### `delete()`
+### `model:delete(...)`
 
 Attempts to delete the row backed by the model instance based on the primary
 key.
 
-```lua
-local user = Users:find(1)
-user:delete()
-```
-
-```moon
+$dual_code{[[
 user = Users\find 1
 user\delete!
-```
+]]}
+
 
 ```sql
 DELETE FROM "users" WHERE "id" = 1
 ```
 
-`delete` will return `true` if the row was actually deleted. It's important to
-check this value to avoid any race conditions when running code in response to a
-delete.
+The first argument can be a `db.clause` object to cause the deletion be
+contingent on another set of conditions:
 
-Consider the following code:
-
-```lua
-local user = Users:find()
-
--- Wrong:
-if user then
-  user:delete()
-  decrement_total_user_count()
-end
-
--- Correct:
-if user then
-  if user:delete() then
-    decrement_total_user_count()
-  end
-end
-```
-
-```moon
+$dual_code{[[
 user = Users\find 1
+user\delete db.clause {
+  active: false
+}
+]]}
 
--- Wrong:
-if user
-  user\delete!
-  decrement_total_user_count!
 
--- Correct:
-if user
-  if user\delete!
-    decrement_total_user_count!
+```sql
+DELETE FROM "users" WHERE "id" = 1 and not "active"
 ```
 
-Due to the asynchronous nature of OpenResty, it's possible that if two requests
-enter this block of code around the same time `delete` may end up getting called
-twice. This isn't a problem by itself, but the `decrement_total_user_count`
-function would get called twice and may invalidate whatever data it has.
+Any remaining arugments will be append as `RETURNING` columns for the result
+object in the second return value. This can be used to atomically know what the
+row contained at the time of deletion, as the model instance that delete was
+called on may be out of date if two requests are processing the same request at
+the same time.
 
-### `refresh(...)`
+$dual_code{[[
+user = Users\find 1
+success, res = user\delete "status"
+
+print res.affected_rows --> will be 1 when delete succeeded, and success = true
+print res[1].status --> the status field of the row when it was deleted
+]]}
+
+```sql
+DELETE FROM "users" WHERE "id" = 1 RETURNING "status"
+```
+
+`delete` will return `true` as the first return value if the row was actually
+deleted. It's important to check this value to avoid any race conditions when
+running code in response to a delete.
+
+The following is an example of an incorrect way to delete a row with side
+effects. It's possible that the delete did not if another thread processed the
+request first.
+
+$dual_code{[[
+-- This is incorrect!
+user = assert Users\find 1
+user\delete!
+decrement_total_user_count!
+]]}
+
+This is the correct way to write a deletion side effect:
+
+$dual_code{[[
+user = assert Users\find 1
+if user\delete!
+  decrement_total_user_count!
+]]}
+
+Because multiple request can be processed at the same time, it's possible that
+if two requests are able to load the model instance at the same time, and
+`delete` may end up getting called twice. This isn't a problem by itself, but
+the `decrement_total_user_count` function would get called twice and may
+invalidate whatever data it has.
+
+### `model:refresh(...)`
 
 Updates the values of the fields on the instance from the database.
 
@@ -948,6 +1063,18 @@ post:refresh("color", "height")
 ```sql
 SELECT "color", "height" from "posts" where id = 1
 ```
+
+### `model:url_key(...)`
+
+This method implements the interface for `url_for` that allows the model
+instance to be used as a value for a URL parameter. The default implementation
+will concatenate all of the primary keys by the `-` character. If there is only
+one primary key, then the `url_key` will be just that value converted to a
+string.
+
+Generally, you should implement `url_params` method on your model if you would
+like to have the model have a fully declared URL within your app.
+
 
 ## Timestamps
 
@@ -1115,20 +1242,8 @@ object.
 
 For example, say we have the following table and model: (See [Database Schemas](database.html#database-schemas) for more information on creating tables.)
 
-```lua
-create_table("users", {
-  { "id", types.serial },
-  { "name", types.varchar },
-  { "group_id", types.foreign_key },
-
-  "PRIMARY KEY(id)"
-})
-
-local Users = Model:extend("users")
-```
-
-
-```moon
+$dual_code{
+moon = [[
 create_table "users", {
   { "id", types.serial }
   { "name", types.varchar }
@@ -1138,18 +1253,26 @@ create_table "users", {
 }
 
 class Users extends Model
+]],
+lua = [[
+create_table("users", {
+  { "id", types.serial },
+  { "name", types.varchar },
+  { "group_id", types.foreign_key },
 
-```
+  "PRIMARY KEY(id)"
+})
+
+local Users = Model:extend("users")
+]]
+}
+
 
 We can create a paginator like so:
 
-```lua
-local paginated = Users:paginated("where group_id = ? order by name asc", 123)
-```
-
-```moon
+$dual_code{[[
 paginated = Users\paginated [[where group_id = ? order by name asc]], 123
-```
+]]}
 
 The type of paginator created by the `paginated` class method is an
 `OffsetPaginator`. This paginator uses `LIMIT` and `OFFSET` query clauses to
@@ -1224,13 +1347,9 @@ Returns the total number of pages.
 Gets the total number of items that can be returned. The paginator will parse
 the query and remove all clauses except for the `WHERE` when issuing a `COUNT`.
 
-```lua
-local users = paginated:total_items()
-```
-
-```moon
+$dual_code{[[
 users = paginated\total_items!
-```
+]]}
 
 ```sql
 SELECT COUNT(*) as c from "users" where group_id = 123
@@ -1244,16 +1363,10 @@ result set loaded in memory at once.
 
 Each item is preloaded with the `prepare_results` function if provided.
 
-```lua
-for page_results, page_num in paginated:each_page() do
-  print(page_results, page_num)
-end
-```
-
-```moon
+$dual_code{[[
 for page_results, page_num in paginated\each_page!
   print(page_results, page_num)
-```
+]]}
 
 > Be careful modifying rows in the database when iterating over each page, as
 > your modifications might change the query result order and you may process
@@ -1282,16 +1395,17 @@ Checks to see if the paginator returns at least 1 item. Returns a boolean. This 
 more efficient than counting the items and checking for a number greater than 0
 because the query generated by this function doesn't do any counting.
 
-```lua
+$dual_code{
+moon = [[
+if pager\has_items!
+  do_something!
+]],
+lua = [[
 if pager:has_items() then
   -- ...
 end
-```
-
-```moon
-if pager\has_items!
-  do_something!
-```
+]]
+}
 
 ```sql
 SELECT 1 FROM "users" where group_id = 123 limit 1
@@ -1334,19 +1448,9 @@ method to paginate results.
 
 Here's an example model:
 
-```lua
-create_table("events", {
-  { "id", types.serial },
-  { "user_id", types.foreign_key },
-  { "data", types.text },
 
-  "PRIMARY KEY(id)"
-})
-
-local Events = Model:extend("events")
-```
-
-```moon
+$dual_code{
+moon = [[
 create_table "events", {
   { "id", types.serial }
   { "user_id", types.foreign_key }
@@ -1356,24 +1460,37 @@ create_table "events", {
 }
 
 class Events extends Model
-```
+]],
+lua = [[
+create_table("events", {
+  { "id", types.serial },
+  { "user_id", types.foreign_key },
+  { "data", types.text },
+
+  "PRIMARY KEY(id)"
+})
+
+local Events = Model:extend("events")
+]]}
+
 
 Here's how to instantiate an ordered paginator that can iterate over the `events`
 table for a specific user id, in ascending order:
+ 
 
-```lua
-local OrderedPaginator = require("lapis.db.pagination").OrderedPaginator
-local pager = OrderedPaginator(Events, "id", "where user_id = ?", 123, {
-  per_page = 50
-})
-```
-
-```moon
+$dual_code{
+moon = [[
 import OrderedPaginator from require "lapis.db.pagination"
 pager = OrderedPaginator Events, "id", "where user_id = ?", 123, {
   per_page: 50
 }
-```
+]],
+lua = [[
+local OrderedPaginator = require("lapis.db.pagination").OrderedPaginator
+local pager = OrderedPaginator(Events, "id", "where user_id = ?", 123, {
+  per_page = 50
+})
+]]}
 
 The `OrderedPaginator` constructor function matches the same interface as the
 regular `Paginator` except it takes an additional argument after the model name:
@@ -1383,21 +1500,23 @@ Call `get_page` with no arguments to get the first page of results. In addition
 to the results of the query, the addition arguments contain the values that
 should be passed to get page to get the next page of results.
 
-```lua
--- get the first page
-local results, next_page = pager:get_page()
-
--- get the next page
-local results_2, next_page = pager:get_page(next_page)
-```
-
-```moon
+$dual_code{
+moon = [[
 -- get the first page
 results, next_page = pager\get_page!
 
 -- get the next page
 results_2, next_page = pager\get_page next_page
-```
+]],
+lua = [[
+-- get the first page
+local results, next_page = pager:get_page()
+
+-- get the next page
+local results_2, next_page = pager:get_page(next_page)
+]]
+
+}
 
 ```sql
 SELECT * from "events" where user_id = 123 order by "events"."id" ASC limit 50
@@ -1531,16 +1650,18 @@ The following relations are available:
 ### `belongs_to`
 
 A relation that fetches a single related model. The foreign key column used to
-fetch the other model is located on the same table as the model.
+fetch the other model is located on the same table as the model. For example, a
+table named `posts` with a column named `user_id` would belong to a table named
+`users`.  From the opposite end, the `users` table can either user `has_one` or
+`has_many` to relate to the `posts` table.
 
 The name of the relation is used to derive the name of the column used as the
-foreign key in addition to the name of the method added to the model to fetch
-the associated row.
+foreign key. Additionally, the auto-generated methods on the model for fetching
+the associated row(s) will use the name of the relation.
 
 A `belongs_to` relation named `user` would look for a column named `user_id` on
 the current model. When the relation is fetched, it will be cached in a field
-named `user` in the model.
-
+named `user` in the model with an autogenerated method named `get_user`.
 
 ```lua
 local Model = require("lapis.db.model").Model
@@ -1696,7 +1817,7 @@ $options_table{
 
       Defaults a singular foreign key by appending `_id` to the singular form of the table name, eg. `Users` → `user_id`
     ]],
-    default = "`#{singular(table_name)}_id`"
+    default = "`{singular(table_name)}_id`"
   },
   {
     name = "where",
@@ -1971,61 +2092,55 @@ Just like `enum`, it's recommended to explicitly write the integer keys to make
 it clear that they can't be reordered without changing the meaning of the
 relation.
 
-
-```lua
-local Model = require("lapis.db.model").Model
-
-local Purchases = Model:extend("purchases", {
-  relations = {
-    {"object", polymorphic_belongs_to = {
-      [1] = "Users",
-      [2] = "Books",
-    }},
-  }
-})
-```
-
-```moon
+$dual_code{
+moon = [[
 import Model from require "lapis.db.model"
 
 class Posts extends Model
   @relations: {
     {"user", polymorphic_belongs_to: {
-      [1]: "Users"
+      [1]: "VideoGames"
       [2]: "Books"
     }}
   }
-```
+]],
+lua = [[
+local Model = require("lapis.db.model").Model
+
+local Purchases = Model:extend("purchases", {
+  relations = {
+    {"object", polymorphic_belongs_to = {
+      [1] = "VideoGames",
+      [2] = "Books",
+    }}
+  }
+})
+]]
+}
 
 In the example above, an `enum` named `object_types` is created. Note that is
 uses the table names, instead of the class names. It is equivalent to:
 
-
-```lua
+$dual_code{
+moon = [[
 Purchases.object_types = enum {
-  users = 1,
-  books = 2
-}
-```
-
-```moon
-Purchases.object_types = enum {
-  users: 1
+  video_games: 1
   books: 2
 }
-```
+]]
+}
 
 The following methods are automatically generated on the model class with the
-polymorphic relation: (where `#{name}` is the name of the relation)
+polymorphic relation: (where `{name}` is the name of the relation)
 
-* `model_for_#{name}_type(type)` -- Takes the integer or name from type `enum` and returns the model class associated to that type. If the class could not be found an error is raised
-* `#{name}_type_for_model(model)` -- Takes a model and returns the `enum` type for it (as integer)
-* `#{name}_type_for_object(obj)` -- Takes an instances of an object and returns the `enum` type for it (as integer)
+* `model_for_{name}_type(type)` -- Takes the integer or name from type `enum` and returns the model class associated to that type. If the class could not be found an error is raised
+* `{name}_type_for_model(model)` -- Takes a model and returns the `enum` type for it (as integer)
+* `{name}_type_for_object(obj)` -- Takes an instances of an object and returns the `enum` type for it (as integer)
 
 
 A *getter* instance method is added to the model:
 
-* `get_#{name}` -- Will fetch and return the associated object. This will only perform a query if the relation has not already been fetched or preloaded. `nil` will be returned if no object could be found, or the foreign key is `nil`
+* `get_{name}` -- Will fetch and return the associated object. This will only perform a query if the relation has not already been fetched or preloaded. `nil` will be returned if no object could be found, or the foreign key is `nil`
 
 Additionally, a preloader is installed into the model that will allow all
 associated objects across all the different tables to be loaded efficiently.

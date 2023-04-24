@@ -26,12 +26,13 @@ class Model extends BaseModel
       values.created_at or= time
       values.updated_at or= time
 
-    res = db.insert @table_name!, values, @primary_keys!
+    res = db.insert @table_name!, values
 
     if res
-      -- FIXME this code works only if mysql backend is
-      -- either luasql (field res.last_auto_id) or
-      -- lua-resty-mysql (field res.insert_id) and
+      -- NOTE: Due to limitation of mysql bindings, we don't know how to set
+      -- the autoincrementing id to the correct column name on composite keys.
+      -- Developer will have to manually read the id out and assign it
+      -- Recommendation: use mariadb which supports RETURNING syntax
       new_id = res.last_auto_id or res.insert_id
       if not values[@primary_key] and new_id and new_id != 0
         values[@primary_key] = new_id

@@ -8,6 +8,7 @@ normalize_headers = do
     setmetatable {normalize(k), v for k,v in pairs t}, __index: (name) =>
       rawget @, normalize name
 
+-- append a cookie to the input headers
 add_cookie = (headers, name, val) ->
   import escape from require "lapis.util"
   assign = "#{escape name}=#{escape val}"
@@ -16,6 +17,26 @@ add_cookie = (headers, name, val) ->
     headers.Cookie = "#{old}; #{assign}"
   else
     headers.Cookie = assign
+
+-- extract the cookies from set_cookie response headers
+extract_cookies = (response_headers) ->
+  set_cookies = response_headers.set_cookie
+  return unless set_cookies
+
+  if type(set_cookies) == "string"
+    set_cookies = { set_cookies }
+
+  parsed_cookies = {}
+
+  for cookie_header in *set_cookies
+    import parse_cookie_string from require "lapis.util"
+    tmp = parse_cookie_string cookie_header
+    set_name = cookie_header\match "[^=]+"
+    parsed_cookies[set_name] = tmp[set_name]
+
+
+  parsed_cookies
+
 
 -- returns the result of request using app
 -- mock_request App, "/hello"
@@ -39,6 +60,7 @@ mock_request = (app_cls, url, opts={}) ->
   else {}
 
   -- copy in new params
+  -- TODO: rename this to query (for query params), also support old syntax
   if opts.get
     for k,v in pairs opts.get
       if type(k) == "number"
@@ -126,8 +148,15 @@ mock_request = (app_cls, url, opts={}) ->
 
     header: out_headers
 
-    now: -> os.time!
-    update_time: => os.time!
+    now: -> os.time! -- note that the resolution here does not match what nginx generates
+
+    update_time: -> os.time!
+    time: -> os.time!
+
+    -- This is a bit hacky: We use the init phase to force pgmoon to default to
+    -- using luasocket for the nginx socket, as we don't support the full
+    -- cosocket protocol here. This should otherwise have no effect on your app
+    get_phase: -> "init"
 
     ctx: { }
 
@@ -173,7 +202,22 @@ mock_request = (app_cls, url, opts={}) ->
         out
 
       get_post_args: ->
-        opts.post or {}
+        if opts.post
+          return opts.post
+
+        if opts.body and headers["Content-type"] == "application/x-www-form-urlencoded"
+          if args = parse_query_string(opts.body)
+            return {k,v for k,v in pairs args when type(k) == "string"}
+
+        {}
+
+    }
+
+    -- we can't suppor this api so we just return blank responses
+    location: {
+      capture: -> { status: 200, header: {}, body: "" }
+      capture_multi: (args) ->
+        [{ status: 200, header: {}, body: "" } for i=1,#args]
     }
   }
 
@@ -249,4 +293,4 @@ stub_request = (app_cls, url="/", opts={}) ->
   mock_request app, url, opts
   stub
 
-{ :mock_request, :assert_request, :normalize_headers, :mock_action, :stub_request }
+{ :mock_request, :assert_request, :normalize_headers, :mock_action, :stub_request, :extract_cookies }

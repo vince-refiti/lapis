@@ -27,6 +27,16 @@ We just created a Discord for Lapis users and those interested in it to communic
 
 Made a website in Lapis? [Tell us](https://github.com/leafo/lapis/discussions/749)
 
+## Supplemental Libraries
+
+
+* [lapis-eswidget](https://github.com/leafo/lapis-eswidget) - A widget base class designed for organizing front-end code bundling
+* [lapis-annotate](https://github.com/leafo/lapis-annotate) - Autogenerate comments on models with their database schema
+* [lapis-console](https://github.com/leafo/lapis-console) - Interactive MoonScript console for Lapis that runs inside of your browser
+* [lapis-exceptions](https://github.com/leafo/lapis-exceptions) - Exception tracking and reporting
+* [lapis-bayes](https://github.com/leafo/lapis-bayes) - General purpose Bayes classification for Spam, Fraud, etc.
+
+
 ## Running Tests
 
 If you need to run tests outside of our CI. The test suites require
@@ -63,28 +73,6 @@ docker run lapis-test
 `docker build` will pull in the files in the current directory, including any
 changes. To test modified code, build again before running the test suite. It
 should be a quick operation since dependency installation is cached.
-
-## License (MIT)
-
-Copyright (C) 2020 by Leaf Corcoran
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in
-all copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
-THE SOFTWARE.
 
  [1]: http://moonscript.org
  [2]: http://olivinelabs.com/busted/

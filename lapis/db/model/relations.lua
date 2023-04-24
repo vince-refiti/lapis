@@ -3,6 +3,11 @@ local LOADED_KEY = setmetatable({ }, {
     return "::loaded_relations::"
   end
 })
+local concat, insert
+do
+  local _obj_0 = table
+  concat, insert = _obj_0.concat, _obj_0.insert
+end
 local assert_model
 assert_model = function(primary_model, model_name)
   do
@@ -39,16 +44,8 @@ end
 local preload
 local preload_relation
 preload_relation = function(self, objects, name, ...)
-  local optional
-  if name:sub(1, 1) == "?" then
-    name = name:sub(2)
-    optional = true
-  end
   local preloader = self.relation_preloaders and self.relation_preloaders[name]
   if not (preloader) then
-    if optional then
-      return false
-    end
     error("Model " .. tostring(self.__name) .. " doesn't have preloader for " .. tostring(name))
   end
   preloader(self, objects, ...)
@@ -63,63 +60,80 @@ preload_relations = function(self, objects, name, ...)
     return true
   end
 end
-local preload_homogeneous
-preload_homogeneous = function(sub_relations, model, objects, front, ...)
-  local to_json
-  to_json = require("lapis.util").to_json
-  if not (front) then
-    return 
+local parse_relation_name
+parse_relation_name = function(name)
+  local optional, final_name
+  if name:sub(1, 1) == "?" then
+    optional, final_name = true, name:sub(2)
+  else
+    optional, final_name = false, name
   end
-  if type(front) == "table" then
-    for key, val in pairs(front) do
+  return final_name, optional
+end
+local preload_homogeneous
+preload_homogeneous = function(sub_relations, model, objects, preload_spec, ...)
+  local _exp_0 = type(preload_spec)
+  if "nil" == _exp_0 then
+    local _ = nil
+  elseif "table" == _exp_0 then
+    for key, val in pairs(preload_spec) do
       local _continue_0 = false
       repeat
-        local relation = type(key) == "string" and key or val
-        local preload_opts = type(val) == "table" and val[preload] or nil
-        preload_relation(model, objects, relation, preload_opts)
-        if type(key) == "string" then
-          local optional, relation_name
-          if key:sub(1, 1) == "?" then
-            optional, relation_name = true, key:sub(2)
-          else
-            optional, relation_name = false, key
+        local _exp_1 = type(key)
+        if "number" == _exp_1 then
+          sub_relations = preload_homogeneous(sub_relations, model, objects, val)
+        elseif "string" == _exp_1 then
+          if val == false then
+            _continue_0 = true
+            break
           end
+          local relation_name, optional = parse_relation_name(key)
           local r = find_relation(model, relation_name)
-          if not (r) then
-            if optional then
-              _continue_0 = true
-              break
-            end
-            error("Model " .. tostring(model.__name) .. " doesn't have preloader for " .. tostring(relation_name))
+          if optional and not r then
+            _continue_0 = true
+            break
           end
-          sub_relations = sub_relations or { }
-          local _update_0 = val
-          sub_relations[_update_0] = sub_relations[_update_0] or { }
-          local loaded_objects = sub_relations[val]
-          if r.has_many or r.fetch and r.many then
-            for _index_0 = 1, #objects do
-              local _continue_1 = false
-              repeat
-                local obj = objects[_index_0]
-                if not (obj[relation_name]) then
+          local val_type = type(val)
+          local preload_opts
+          local _exp_2 = val_type
+          if "table" == _exp_2 then
+            preload_opts = val[preload]
+          elseif "function" == _exp_2 then
+            preload_opts = {
+              loaded_results_callback = val
+            }
+          end
+          preload_relation(model, objects, relation_name, preload_opts)
+          if not (val_type == "boolean" or val_type == "function") then
+            sub_relations = sub_relations or { }
+            local _update_0 = val
+            sub_relations[_update_0] = sub_relations[_update_0] or { }
+            local loaded_objects = sub_relations[val]
+            if r.has_many or r.fetch and r.many then
+              for _index_0 = 1, #objects do
+                local _continue_1 = false
+                repeat
+                  local obj = objects[_index_0]
+                  if not (obj[relation_name]) then
+                    _continue_1 = true
+                    break
+                  end
+                  local _list_0 = obj[relation_name]
+                  for _index_1 = 1, #_list_0 do
+                    local fetched = _list_0[_index_1]
+                    table.insert(loaded_objects, fetched)
+                  end
                   _continue_1 = true
+                until true
+                if not _continue_1 then
                   break
                 end
-                local _list_0 = obj[relation_name]
-                for _index_1 = 1, #_list_0 do
-                  local fetched = _list_0[_index_1]
-                  table.insert(loaded_objects, fetched)
-                end
-                _continue_1 = true
-              until true
-              if not _continue_1 then
-                break
               end
-            end
-          else
-            for _index_0 = 1, #objects do
-              local obj = objects[_index_0]
-              table.insert(loaded_objects, obj[relation_name])
+            else
+              for _index_0 = 1, #objects do
+                local obj = objects[_index_0]
+                table.insert(loaded_objects, obj[relation_name])
+              end
             end
           end
         end
@@ -129,10 +143,15 @@ preload_homogeneous = function(sub_relations, model, objects, front, ...)
         break
       end
     end
+  elseif "string" == _exp_0 then
+    local relation_name, optional = parse_relation_name(preload_spec)
+    if not (optional and not find_relation(model, relation_name)) then
+      preload_relation(model, objects, relation_name)
+    end
   else
-    preload_relation(model, objects, front)
+    error("preload: requested relation is an unknown type: " .. tostring(type(preload_spec)) .. ". Expected string, table or nil")
   end
-  if ... then
+  if select("#", ...) > 0 then
     return preload_homogeneous(sub_relations, model, objects, ...)
   else
     return sub_relations
@@ -162,16 +181,19 @@ preload = function(objects, ...)
   return true
 end
 local mark_loaded_relations
-mark_loaded_relations = function(items, name)
+mark_loaded_relations = function(items, name, value)
+  if value == nil then
+    value = true
+  end
   for _index_0 = 1, #items do
     local item = items[_index_0]
     do
       local loaded = item[LOADED_KEY]
       if loaded then
-        loaded[name] = true
+        loaded[name] = value
       else
         item[LOADED_KEY] = {
-          [name] = true
+          [name] = value
         }
       end
     end
@@ -332,10 +354,16 @@ belongs_to = function(self, name, opts)
   end
   self.relation_preloaders[name] = function(self, objects, preload_opts)
     local model = assert_model(self.__class, source)
-    preload_opts = preload_opts or { }
-    preload_opts.as = name
-    preload_opts.for_relation = name
-    return model:include_in(objects, column_name, preload_opts)
+    local include_opts = {
+      as = name,
+      for_relation = name
+    }
+    if preload_opts then
+      for k, v in pairs(preload_opts) do
+        include_opts[k] = v
+      end
+    end
+    return model:include_in(objects, column_name, include_opts)
   end
 end
 local has_one
@@ -385,9 +413,13 @@ has_one = function(self, name, opts)
     do
       local where = opts.where
       if where then
-        for k, v in pairs(where) do
-          clause[k] = v
+        if not (self.__class.db.is_clause(where)) then
+          where = self.__class.db.clause(where)
         end
+        clause = self.__class.db.clause({
+          self.__class.db.clause(clause),
+          where
+        })
       end
     end
     do
@@ -412,11 +444,17 @@ has_one = function(self, name, opts)
         [opts.key or tostring(self.__class:singular_name()) .. "_id"] = local_key
       }
     end
-    preload_opts = preload_opts or { }
-    preload_opts.for_relation = name
-    preload_opts.as = name
-    preload_opts.where = preload_opts.where or opts.where
-    return model:include_in(objects, key, preload_opts)
+    local include_opts = {
+      for_relation = name,
+      as = name,
+      where = opts.where
+    }
+    if preload_opts then
+      for k, v in pairs(preload_opts) do
+        include_opts[k] = v
+      end
+    end
+    return model:include_in(objects, key, include_opts)
   end
 end
 local has_many
@@ -426,9 +464,9 @@ has_many = function(self, name, opts)
   local get_method = opts.as or "get_" .. tostring(name)
   local get_paginated_method = tostring(get_method) .. "_paginated"
   local build_query
-  build_query = function(self, additional_opts)
+  build_query = function(self, calling_opts)
     local foreign_key = opts.key or tostring(self.__class:singular_name()) .. "_id"
-    local clause
+    local join_clause
     if type(foreign_key) == "table" then
       local out = { }
       for k, v in pairs(foreign_key) do
@@ -440,33 +478,63 @@ has_many = function(self, name, opts)
         end
         out[key] = self[local_key] or self.__class.db.NULL
       end
-      clause = out
+      join_clause = out
     else
-      clause = {
+      join_clause = {
         [foreign_key] = self[opts.local_key or self.__class:primary_keys()]
       }
     end
+    local buffer = {
+      "WHERE "
+    }
+    local clause = join_clause
+    local additional_clause
     do
       local where = opts.where
       if where then
-        for k, v in pairs(where) do
-          clause[k] = v
+        if not (additional_clause) then
+          additional_clause = {
+            self.__class.db.clause(clause)
+          }
+        end
+        if self.__class.db.is_clause(where) then
+          table.insert(additional_clause, where)
+        else
+          for k, v in pairs(where) do
+            additional_clause[k] = v
+          end
         end
       end
     end
-    if additional_opts and additional_opts.where then
-      for k, v in pairs(additional_opts.where) do
-        clause[k] = v
-      end
-    end
-    clause = "where " .. tostring(self.__class.db.encode_clause(clause))
     do
-      local order = additional_opts and additional_opts.order or opts.order
-      if order then
-        clause = clause .. " order by " .. tostring(order)
+      local more_where = calling_opts and calling_opts.where
+      if more_where then
+        if not (additional_clause) then
+          additional_clause = {
+            self.__class.db.clause(clause)
+          }
+        end
+        if self.__class.db.is_clause(more_where) then
+          table.insert(additional_clause, more_where)
+        else
+          for k, v in pairs(more_where) do
+            additional_clause[k] = v
+          end
+        end
       end
     end
-    return clause
+    if additional_clause and next(additional_clause) then
+      clause = self.__class.db.clause(additional_clause)
+    end
+    self.__class.db.encode_clause(clause, buffer)
+    local order = opts.order
+    if calling_opts and calling_opts.order ~= nil then
+      order = calling_opts.order
+    end
+    if order then
+      insert(buffer, " ORDER BY " .. tostring(order))
+    end
+    return concat(buffer)
   end
   self.__base[get_method] = function(self)
     local existing = self[name]
@@ -513,17 +581,21 @@ has_many = function(self, name, opts)
     if not (composite_key) then
       local_key = opts.local_key or self.__class:primary_keys()
     end
-    preload_opts = preload_opts or { }
-    if not (composite_key) then
-      preload_opts.flip = true
+    local include_opts = {
+      many = true,
+      for_relation = name,
+      as = name,
+      local_key = local_key,
+      flip = not composite_key,
+      order = opts.order,
+      where = opts.where
+    }
+    if preload_opts then
+      for k, v in pairs(preload_opts) do
+        include_opts[k] = v
+      end
     end
-    preload_opts.many = true
-    preload_opts.for_relation = name
-    preload_opts.as = name
-    preload_opts.local_key = local_key
-    preload_opts.order = preload_opts.order or opts.order
-    preload_opts.where = preload_opts.where or opts.where
-    return model:include_in(objects, foreign_key, preload_opts)
+    return model:include_in(objects, foreign_key, include_opts)
   end
 end
 local polymorphic_belongs_to

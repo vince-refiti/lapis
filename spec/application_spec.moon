@@ -6,13 +6,25 @@ import mock_action, mock_request, assert_request from require "lapis.spec.reques
 mock_app = (...) ->
   mock_action lapis.Application, ...
 
-
 describe "lapis.application", ->
   before_each ->
     -- unload any dynamically loaded modules for views & actions
     for k,v in pairs package.loaded
       if k\match("^actions%.") or k\match("^vies%.")
         package.loaded[k] = nil
+
+  describe "mutation check", ->
+    it "prevents adding routes", ->
+      assert.has_error(
+        -> lapis.Application\match("hello", ->)
+        "lapis.Application is not able to be modified with routes. You must either subclass or instantiate it"
+      )
+
+    it "prevents adding features", ->
+      assert.has_error(
+        -> lapis.Application\enable "exceptions"
+        "You tried to enable a feature on the read-only class lapis.Application. You must sub-class it before enabling features"
+      )
 
   describe "find_action", ->
     action1 = ->
@@ -90,29 +102,64 @@ describe "lapis.application", ->
       "/yeah": => result = "child yeah"
       "/thing": => result = "child thing"
 
-    it "should find route in base app", ->
+    it "finds route in base app", ->
       status, buffer, headers = mock_request ChildApp, "/hello/world", {}
       assert.same 200, status
       assert.same "base test", result
 
-    it "should generate url from route in base", ->
+    it "generates url from route in base", ->
       url = mock_action ChildApp, =>
         @url_for "test_route", var: "foobar"
 
       assert.same url, "/hello/foobar"
 
-    it "should override route in base class", ->
+    it "overrides route in base class", ->
       status, buffer, headers = mock_request ChildApp, "/yeah", {}
       assert.same 200, status
       assert.same "child yeah", result
 
-  describe "@include", ->
+    it "overrides route by route name", ->
+      class Root extends lapis.Application
+        layout: false
+        [test_route: "/hello/:var"]: => "original"
+
+      class ChildApp extends Root
+        [test_route: "/zone"]: => "override"
+
+      status, res = mock_request ChildApp, "/zone", {}
+      assert.same {200, "override"}, {status, res}
+
+      -- route does not exist, overwritten
+      assert.has_error ->
+        mock_request ChildApp, "/hello/world", {}
+
+      assert.same "/zone", ChildApp!.router\url_for "test_route", var: "whoa"
+
+    it "re-used path replaces route name", ->
+      class Root extends lapis.Application
+        layout: false
+        [first: "/hello/:cool"]: => "first"
+
+      class ChildApp extends Root
+        [second: "/hello/:cool"]: => "second"
+
+      status, res = mock_request ChildApp, "/hello/yeah", {}
+      assert.same {200, "second"}, {status, res}
+
+      app = ChildApp!
+      assert.same "/hello/whoa", app.router\url_for "second", cool: "whoa"
+      assert.has_error(
+        -> app.router\url_for "first"
+        "lapis.router: There is no route named: first"
+      )
+
+  describe "include", ->
     local result
 
     before_each ->
       result = nil
 
-    it "should include another app", ->
+    it "app class includes app class", ->
       class SubApp extends lapis.Application
         "/hello": => result = "hello"
 
@@ -129,7 +176,7 @@ describe "lapis.application", ->
       assert.same 200, status
       assert.same "world", result
 
-    it "should merge url table", ->
+    it "app class includes app class with named routes", ->
       class SubApp extends lapis.Application
         [hello: "/hello"]: => result = "hello"
 
@@ -142,7 +189,7 @@ describe "lapis.application", ->
       assert.same "/hello", req\url_for "hello"
       assert.same "/world", req\url_for "world"
 
-    it "should set sub app prefix path", ->
+    it "sets sub-app prefix path", ->
       class SubApp extends lapis.Application
         [hello: "/hello"]: => result = "hello"
 
@@ -155,7 +202,7 @@ describe "lapis.application", ->
       assert.same "/sub/hello", req\url_for "hello"
       assert.same "/world", req\url_for "world"
 
-    it "should set sub app url name prefix", ->
+    it "sets sub-app url name prefix", ->
       class SubApp extends lapis.Application
         [hello: "/hello"]: => result = "hello"
 
@@ -170,7 +217,7 @@ describe "lapis.application", ->
       assert.same "/hello", req\url_for "sub_hello"
       assert.same "/world", req\url_for "world"
 
-    it "should set include options from target app", ->
+    it "sets include options from target app", ->
       class SubApp extends lapis.Application
         @path: "/sub"
         @name: "sub_"
@@ -288,6 +335,57 @@ describe "lapis.application", ->
         buffer: "hi"
       }, { :status, :buffer }
 
+    describe "instance #ddd", ->
+      it "includes instance into instance", ->
+        app1 = lapis.Application!
+        app1\match "/hello", => "hello"
+
+        app2 = lapis.Application!
+        app2.layout = false
+        app2\match "/world", => "world"
+        app2\include app1
+
+        assert.same "hello", (select 2, mock_request app2, "/hello")
+        assert.same "world", (select 2, mock_request app2, "/world")
+
+      it "includes class into instance", ->
+        class Things extends lapis.Application
+          [hello: "/hello"]: => "hello!"
+
+        app = lapis.Application!
+        app.layout = false
+        app\match "/world", => "world!"
+
+        app\include Things
+
+        assert.same "hello!", (select 2, mock_request app, "/hello")
+        assert.same "world!", (select 2, mock_request app, "/world")
+
+        app2 = lapis.Application!
+        app2.layout = false
+        app2\match "/world", => "world!"
+
+        app2\include Things!
+
+        assert.same "hello!", (select 2, mock_request app2, "/hello")
+        assert.same "world!", (select 2, mock_request app2, "/world")
+
+      it "includes an instance into a class", ->
+        class Things extends lapis.Application
+          [hello: "/hello"]: => "hello!!"
+
+        things = Things!
+        things\match "/world", => "world!!"
+
+        class Whoa extends lapis.Application
+          layout: false
+          @include things
+          [whoa: "/whoa"]: => "whoa!!"
+
+        assert.same "hello!!", (select 2, mock_request Whoa, "/hello")
+        assert.same "world!!", (select 2, mock_request Whoa, "/world")
+        assert.same "whoa!!", (select 2, mock_request Whoa, "/whoa")
+
   describe "default route", ->
     it "hits default route", ->
       local res
@@ -335,7 +433,7 @@ describe "lapis.application", ->
     import capture_errors, capture_errors_json, assert_error,
       yield_error from require "lapis.application"
 
-    it "should capture error", ->
+    it "capture_errors", ->
       result = "no"
       errors = nil
 
@@ -355,7 +453,7 @@ describe "lapis.application", ->
       assert.same {"something bad happened!"}, errors
 
 
-    it "should capture error as json", ->
+    it "capture_errors_json", ->
       result = "no"
 
       class ErrorApp extends lapis.Application
@@ -504,8 +602,43 @@ describe "lapis.application", ->
         req: { method: "POST" }
       }
 
+  describe "route builders on class", ->
+    it "calls match on calss", ->
+      local result
+
+      counter = 0
+
+      class SomeApp extends lapis.Application
+        @before_filter ->
+          counter += 1
+
+        @match "/", => result = "root"
+        @match "/user/:id", => result = "user_id"
+
+        @get "cool", "/cool", => result = "get:#{@route_name}"
+        @post "cool", "/cool", => result = "post:#{@route_name}"
+
+      assert_request SomeApp, "/"
+      assert.same "root", result
+      assert.same 1, counter
+
+      assert_request SomeApp, "/user/23042"
+      assert.same "user_id", result
+      assert.same 2, counter
+
+      assert_request SomeApp, "/cool"
+      assert.same "get:cool", result
+      assert.same 3, counter
+
+      assert_request SomeApp, "/cool", method: "POST"
+      assert.same "post:cool", result
+      assert.same 4, counter
+
+      assert.has_error ->
+        assert_request SomeApp, "/cool", method: "DELETE"
+
   describe "instancing", ->
-    it "should match a route", ->
+    it "matchs a route", ->
       local res
       app = lapis.Application!
       app\match "/", => res = "root"
@@ -519,7 +652,7 @@ describe "lapis.application", ->
       assert_request app, "/user/124"
       assert.same "124", res
 
-    it "should should respond to verb", ->
+    it "responds to verb", ->
       local res
       app = lapis.Application!
       app\match "/one", ->
@@ -535,6 +668,24 @@ describe "lapis.application", ->
       assert_request app, "/hello", post: {}
       assert.same "post", res
 
+    it "doesn't allow route mismatch for verbs", ->
+      app = lapis.Application!
+
+      app\get "one", "/one", ->
+      assert.has_error(
+        -> app\post("/one", ->)
+        "You are trying to add a new verb action to a route that was declared with and existing path but different route name. Please ensure you use the same route name and path combination when adding additional verbs to a route."
+      )
+
+      app\get "/two", ->
+      assert.has_error(
+        -> app\post("two", "/two", ->)
+        "You are trying to add a new verb action to a route that was declared with and existing path but different route name. Please ensure you use the same route name and path combination when adding additional verbs to a route."
+      )
+
+      -- TODO: this should fail
+      app\get "three", "/three", ->
+      app\post "three", "/four", ->
 
     it "finds actions by name for verb", ->
       local res
@@ -571,7 +722,7 @@ describe "lapis.application", ->
       assert_request app, "/four",method: "POST"
       assert.same "four POST", res
 
-    it "should hit default route", ->
+    it "hits default route", ->
       local res
 
       app = lapis.Application!
@@ -582,7 +733,7 @@ describe "lapis.application", ->
       assert_request app, "/hello"
       assert.same "default_route", res
 
-    it "should strip trailing / to find route", ->
+    it "strips trailing / to find route", ->
       local res
 
       app = lapis.Application!
@@ -598,18 +749,7 @@ describe "lapis.application", ->
       assert.same 301, status
       assert.same "http://localhost/hello", headers.location
 
-    it "should include another app", ->
-      do return pending "implement include for instances"
-      local res
-
-      sub_app = lapis.Application!
-      sub_app\get "/hello", => res = "hello"
-
-      app = lapis.Application!
-      app\get "/cool", => res = "cool"
-      app\include sub_app
-
-    it "should preserve order of route", ->
+    it "preserves order of route", ->
       app = lapis.Application!
 
       routes = for i=1,20
@@ -632,6 +772,26 @@ describe "lapis.application", ->
 
       -- only set on test env
       assert.truthy h["X-Lapis-Error"]
+
+    it "renders default error page as json", ->
+      status, body, h = mock_request ErrorApp, "/", {
+        allow_error: true
+        expect: "json"
+        headers: {
+          accept: "application/json"
+        }
+      }
+      assert.same 500, status
+
+      assert.truthy body.error
+      assert body.error\match "I am an error"
+
+      assert.truthy body.traceback
+      assert.truthy body.lapis
+
+      -- only set on test env
+      assert.truthy h["X-Lapis-Error"]
+
 
     it "raises error in spec by default", ->
       assert.has_error ->
@@ -683,23 +843,21 @@ describe "lapis.application", ->
       "/": =>
         @html -> div "hello world"
 
-    it "should render html", ->
+    it "renders html", ->
       status, body = assert_request HtmlApp, "/"
       assert.same "<div>hello world</div>", body
 
-
-
   -- this should be in request spec...
   describe "request:build_url", ->
-    it "should build url", ->
+    it "build url", ->
       assert.same "http://localhost", mock_app "/hello", {}, =>
         @build_url!
 
-    it "should build url with path", ->
+    it "build url with path", ->
       assert.same "http://localhost/hello_dog", mock_app "/hello", {}, =>
         @build_url "hello_dog"
 
-    it "should build url with host and port", ->
+    it "build url with host and port", ->
       assert.same "http://leaf:2000/hello",
         mock_app "/hello", { host: "leaf", port: 2000 }, =>
           @build_url @req.parsed_url.path
@@ -714,20 +872,19 @@ describe "lapis.application", ->
         mock_app "/hello", { host: "leaf", scheme: "https", port: 443 }, =>
           @build_url "whoa"
 
-    it "should build url with overridden query", ->
+    it "build url with overridden query", ->
       assert.same "http://localhost/please?yes=no",
         mock_app "/hello", {}, =>
           @build_url "please?okay=world", { query: "yes=no" }
 
-    it "should build url with overridden port and host", ->
+    it "build url with overridden port and host", ->
       assert.same "http://yes:4545/cat?sure=dad",
         mock_app "/hello", { host: "leaf", port: 2000 }, =>
           @build_url "cat?sure=dad", host: "yes", port: 4545
 
-    it "should return arg if already build url", ->
+    it "return arg if already build url", ->
       assert.same "http://leafo.net",
         mock_app "/hello", { host: "leaf", port: 2000 }, =>
           @build_url "http://leafo.net"
-
 
 

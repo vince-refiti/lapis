@@ -8,6 +8,10 @@ module_reset = function()
     end
     keep = _tbl_0
   end
+  local original_path = package.path
+  local original_cpath = package.cpath
+  local original_searchers = package.searchers
+  local original_loaders = package.loaders
   return function()
     local count = 0
     local _list_0
@@ -27,6 +31,10 @@ module_reset = function()
       count = count + 1
       package.loaded[mod] = nil
     end
+    package.path = original_path
+    package.cpath = original_cpath
+    package.searchers = original_searchers
+    package.loaders = original_loaders
     return true, count
   end
 end
@@ -111,8 +119,11 @@ create_server = function(app_module, environment)
     require("lapis.environment").push(environment)
   end
   local config = require("lapis.config").get()
-  local dispatch
-  dispatch = require("lapis.cqueues").dispatch
+  local dispatch, protected_call
+  do
+    local _obj_0 = require("lapis.cqueues")
+    dispatch, protected_call = _obj_0.dispatch, _obj_0.protected_call
+  end
   local load_app
   load_app = function()
     local app_cls
@@ -134,12 +145,22 @@ create_server = function(app_module, environment)
     local reset = module_reset()
     onstream = function(self, stream)
       reset()
-      local app = load_app()
-      return dispatch(app, self, stream)
+      local app
+      if protected_call(stream, function()
+        app = load_app()
+      end) then
+        return dispatch(app, self, stream)
+      end
     end
   elseif "app_only" == _exp_0 then
     onstream = function(self, stream)
-      local app = load_app()
+      stream:get_headers()
+      local app
+      if protected_call(stream, function()
+        app = load_app()
+      end) then
+        app = load_app()
+      end
       return dispatch(app, self, stream)
     end
   else

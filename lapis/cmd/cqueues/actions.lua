@@ -1,11 +1,23 @@
+local unpack = unpack or table.unpack
 return {
-  new = function(self, flags)
-    if self.path.exists("config.lua") then
-      self:fail_with_message("config.lua already exists")
+  new = function(self, args, template_flags)
+    local valid_install = pcall(function()
+      require("cqueues")
+      return require("http.version")
+    end)
+    if not valid_install and not args.force then
+      self:fail_with_message("Unable to load necessary modules for server. Please use LuaRocks to install `cqueues` and `http` modules. You can bypass this error with --force")
     end
-    return self:write_file_safe("config.lua", require("lapis.cmd.cqueues.templates.config"))
+    return self:execute({
+      "generate",
+      "config",
+      "--cqueues",
+      unpack(template_flags)
+    })
   end,
-  server = function(self, flags, environment)
+  server = function(self, args)
+    local environment
+    environment = args.environment
     local push, pop
     do
       local _obj_0 = require("lapis.environment")

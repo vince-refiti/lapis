@@ -64,10 +64,6 @@ unescape = function(text)
     end
   end))
 end
-local strip_tags
-strip_tags = function(html)
-  return html:gsub("<[^>]+>", "")
-end
 local void_tags = {
   "area",
   "base",
@@ -107,7 +103,11 @@ classnames = function(t)
             _continue_0 = true
             break
           end
-          _accum_0[_len_0] = v
+          if type(v) == "table" then
+            _accum_0[_len_0] = classnames(v)
+          else
+            _accum_0[_len_0] = tostring(v)
+          end
         else
           if not (v) then
             _continue_0 = true
@@ -164,8 +164,7 @@ end
 local element
 element = function(buffer, name, attrs, ...)
   do
-    local _with_0 = buffer
-    _with_0:write("<", name)
+    buffer:write("<", name)
     element_attributes(buffer, attrs)
     if void_tags[name] then
       local has_content = false
@@ -188,14 +187,13 @@ element = function(buffer, name, attrs, ...)
         end
       end
       if not (has_content) then
-        _with_0:write("/>")
-        return buffer
+        buffer:write("/>")
+        return 
       end
     end
-    _with_0:write(">")
-    _with_0:write_escaped(attrs, ...)
-    _with_0:write("</", name, ">")
-    return _with_0
+    buffer:write(">")
+    buffer:write_escaped(attrs, ...)
+    buffer:write("</", name, ">")
   end
 end
 local Buffer
@@ -402,20 +400,24 @@ render_html = function(fn)
   html_writer(fn)(buffer)
   return concat(buffer)
 end
-local helper_key = setmetatable({ }, {
+local HELPER_KEY = setmetatable({ }, {
   __tostring = function()
     return "::helper_key::"
   end
 })
+local is_mixins_class
+is_mixins_class = function(cls)
+  return rawget(cls, "_mixins_class") == true
+end
 local Widget
 do
   local _class_0
   local _base_0 = {
     _set_helper_chain = function(self, chain)
-      return rawset(self, helper_key, chain)
+      return rawset(self, HELPER_KEY, chain)
     end,
     _get_helper_chain = function(self)
-      return rawget(self, helper_key)
+      return rawget(self, HELPER_KEY)
     end,
     _find_helper = function(self, name)
       do
@@ -453,7 +455,7 @@ do
     end,
     include_helper = function(self, helper)
       do
-        local helper_chain = self[helper_key]
+        local helper_chain = self[HELPER_KEY]
         if helper_chain then
           insert(helper_chain, helper)
         else
@@ -465,37 +467,30 @@ do
       return nil
     end,
     content_for = function(self, name, val)
-      local full_name = CONTENT_FOR_PREFIX .. name
-      if not (val) then
-        return self._buffer:write(self[full_name])
+      local request = self.get_request and self:get_request()
+      if not (request) then
+        error("content_for called on a widget without a Request in the helper chain. content_for is only available in a request lifecycle")
       end
-      do
-        local helper = self:_get_helper_chain()[1]
-        if helper then
-          local layout_opts = helper.layout_opts
-          if type(val) == "string" then
-            val = escape(val)
-          else
-            val = getfenv(val).capture(val)
-          end
-          local existing = layout_opts[full_name]
-          local _exp_0 = type(existing)
-          if "nil" == _exp_0 then
-            layout_opts[full_name] = val
-          elseif "table" == _exp_0 then
-            return table.insert(layout_opts[full_name], val)
-          else
-            layout_opts[full_name] = {
-              existing,
-              val
-            }
-          end
-        end
+      if val == nil then
+        self._buffer:write(request[CONTENT_FOR_PREFIX .. name])
+        return 
       end
+      local _exp_0 = type(val)
+      if "string" == _exp_0 then
+        val = escape(val)
+      elseif "function" == _exp_0 then
+        val = getfenv(val).capture(val)
+      else
+        val = error("Got unknown type for content_for value: " .. tostring(type(val)))
+      end
+      request.__class.support.append_content_for(request, name, val)
     end,
     has_content_for = function(self, name)
-      local full_name = CONTENT_FOR_PREFIX .. name
-      return not not self[full_name]
+      local request = self.get_request and self:get_request()
+      if not (request) then
+        return false
+      end
+      return not not request[CONTENT_FOR_PREFIX .. name]
     end,
     content = function(self) end,
     render_to_string = function(self, ...)
@@ -571,7 +566,6 @@ do
       self:content(...)
       setmetatable(self, meta)
       self._buffer.widget = old_widget
-      return nil
     end
   }
   _base_0.__index = _base_0
@@ -607,7 +601,7 @@ do
     if not (parent) then
       error("model does not have parent class")
     end
-    if rawget(parent, "_mixins_class") then
+    if is_mixins_class(parent) then
       return parent, false
     end
     local mixins_class
@@ -655,10 +649,29 @@ do
     setmetatable(model.__base, mixins_class.__base)
     return mixins_class, true
   end
+  self.extend = function(self, name, tbl)
+    local lua = require("lapis.lua")
+    local _exp_0 = type(name)
+    if "table" == _exp_0 or "function" == _exp_0 then
+      tbl = name
+      name = nil
+    end
+    if type(tbl) == "function" then
+      tbl = {
+        content = tbl
+      }
+    end
+    local class_fields = { }
+    local cls = lua.class(name or "ExtendedWidget", tbl, self)
+    return cls, cls.__base
+  end
   self.include = function(self, other_cls)
     local other_cls_name
     if type(other_cls) == "string" then
       other_cls, other_cls_name = require(other_cls), other_cls
+    end
+    if self == Widget then
+      error("You attempted to call call Widget:include on the read-only Widget base class. You must create a sub-class to use include")
     end
     if other_cls == Widget then
       error("Your widget tried to include a class that extends from Widget. An included class should be a plain class and not another widget")
@@ -697,5 +710,6 @@ return {
   unescape = unescape,
   classnames = classnames,
   element = element,
+  is_mixins_class = is_mixins_class,
   CONTENT_FOR_PREFIX = CONTENT_FOR_PREFIX
 }
