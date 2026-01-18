@@ -1,5 +1,5 @@
 
-import Flow from require "lapis.flow"
+import Flow, is_flow_class from require "lapis.flow"
 
 describe "lapis.flow", ->
   local base_object
@@ -137,3 +137,88 @@ describe "lapis.flow", ->
     f = CallableFlow { cool: "zone" }
     assert.same "zone", f "cool"
 
+
+  describe "memo", ->
+    import memo, MEMO_KEY from require "lapis.flow"
+
+    it "memos the result of method for flow", ->
+      add = (a, b) => a + b
+
+      class MemoFlow extends Flow
+        calculate: memo add
+
+      obj = {}
+
+      f = MemoFlow obj
+      assert.same 3, f\calculate(1, 2)
+      assert.same 3, f\calculate(5, 2) -- always returns same URL
+
+      assert.same {}, obj
+      assert.same {[add]: {3}}, f[MEMO_KEY]
+
+    it "tests memo and expose_assigns", ->
+      add = (a, b) => a + b
+      class ExposeFlow extends Flow
+        expose_assigns: true
+        calculate: memo add
+
+      obj = {}
+      f = ExposeFlow obj
+      assert.same 4, f\calculate(2, 2)
+      assert.same 4, f\calculate(9, 99)
+      f.hello = "world"
+
+      assert.same {hello: "world"}, obj --- this is the failing test
+      assert.same {[add]: {4}}, f[MEMO_KEY]
+
+    it "tests multiple return values from memo", ->
+      multiple = (a, b) => a, b
+
+      class MultiFlow extends Flow
+        get_values: memo multiple
+
+      obj = {}
+
+      f = MultiFlow obj
+      assert.same {1, 2}, {f\get_values(1, 2)}
+      assert.same {1, 2}, {f\get_values(3, 4)} -- always returns same values
+
+      assert.same {}, obj
+      assert.same {[multiple]: {1, 2}}, f[MEMO_KEY]
+
+  describe "is_flow_class", ->
+    it "returns false for nil", ->
+      assert.false is_flow_class nil
+
+    it "returns false for false", ->
+      assert.false is_flow_class false
+
+    it "returns true for Flow class", ->
+      assert.true is_flow_class Flow
+
+    it "returns true for class extending Flow", ->
+      class MyFlow extends Flow
+      assert.true is_flow_class MyFlow
+
+    it "returns true for deeply nested Flow subclass", ->
+      class FirstFlow extends Flow
+      class SecondFlow extends FirstFlow
+      class ThirdFlow extends SecondFlow
+
+      assert.true is_flow_class SecondFlow
+      assert.true is_flow_class ThirdFlow
+
+    it "returns false for regular table", ->
+      assert.false is_flow_class {}
+
+    it "returns false for regular class", ->
+      class BaseClass
+      class ChildClass extends BaseClass
+
+      assert.false is_flow_class BaseClass
+      assert.false is_flow_class ChildClass
+
+    it "returns false when passing a Flow instance directly", ->
+      class MyFlow extends Flow
+      f = MyFlow {}
+      assert.false is_flow_class f

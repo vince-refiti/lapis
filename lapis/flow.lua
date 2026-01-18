@@ -1,18 +1,40 @@
-local type, getmetatable, setmetatable, rawset
+local type, getmetatable, setmetatable, rawset, rawget
 do
   local _obj_0 = _G
-  type, getmetatable, setmetatable, rawset = _obj_0.type, _obj_0.getmetatable, _obj_0.setmetatable, _obj_0.rawset
+  type, getmetatable, setmetatable, rawset, rawget = _obj_0.type, _obj_0.getmetatable, _obj_0.setmetatable, _obj_0.rawset, _obj_0.rawget
 end
+local unpack = table.unpack or unpack
 local Flow
-local is_flow
-is_flow = function(cls)
+local is_flow_class
+is_flow_class = function(cls)
   if not (cls) then
     return false
   end
   if cls == Flow then
     return true
   end
-  return is_flow(cls.__parent)
+  return is_flow_class(cls.__parent)
+end
+local MEMO_KEY = setmetatable({ }, {
+  __tostring = function()
+    return "::memo_key::"
+  end
+})
+local memo
+memo = function(fn)
+  return function(self, ...)
+    local cache = rawget(self, MEMO_KEY)
+    if not (cache) then
+      cache = { }
+      rawset(self, MEMO_KEY, cache)
+    end
+    if not (cache[fn]) then
+      cache[fn] = {
+        fn(self, ...)
+      }
+    end
+    return unpack(cache[fn])
+  end
 end
 do
   local _class_0
@@ -28,7 +50,7 @@ do
       self._ = _
       assert(self._, "missing flow target")
       self._req = self._
-      if is_flow(self._.__class) then
+      if is_flow_class(self._.__class) then
         self._ = self._._
       end
       local old_mt = getmetatable(self)
@@ -97,7 +119,6 @@ do
       tbl = name
       name = nil
     end
-    local class_fields = { }
     local cls = lua.class(name or "ExtendedFlow", tbl, self)
     return cls, cls.__base
   end
@@ -105,5 +126,7 @@ do
 end
 return {
   Flow = Flow,
-  is_flow = is_flow
+  is_flow_class = is_flow_class,
+  MEMO_KEY = MEMO_KEY,
+  memo = memo
 }

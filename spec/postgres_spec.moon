@@ -1,7 +1,7 @@
 require "spec.helpers" -- for one_of
 
-db = require "lapis.db.postgres"
-schema = require "lapis.db.postgres.schema"
+
+local db, schema
 
 unpack = unpack or table.unpack
 
@@ -15,6 +15,7 @@ TESTS = {
     -> db.format_date 0
     "1970-01-01 00:00:00"
   }
+
   {
     -> db.escape_identifier "dad"
     '"dad"'
@@ -483,6 +484,11 @@ TESTS = {
     [[INSERT INTO "cats" ("profile") VALUES ('blue') ON CONFLICT DO NOTHING RETURNING *]]
   }
 
+  {
+    -> db.insert "cats", { name: "test" }, on_conflict: "do_nothing", returning: {"id", "name"}
+    [[INSERT INTO "cats" ("name") VALUES ('test') ON CONFLICT DO NOTHING RETURNING "id", "name"]]
+  }
+
 
   -- lapis.db.postgres.schema
 
@@ -558,7 +564,7 @@ TESTS = {
 
   {
     -> tostring schema.types.time timezone: true
-    "timestamp with time zone NOT NULL"
+    "timestamp WITH TIME ZONE NOT NULL"
   }
 
   {
@@ -874,15 +880,20 @@ describe "lapis.db.postgres", ->
 
   before_each ->
     snapshot = assert\snapshot!
-    -- make the query function just return the query so we can test what is
-    -- generated
-    stub(db.BACKENDS, "pgmoon").returns (q) -> q
+
+    pg = require("lapis.db.postgres")
+    db = pg.configure nil, {}
+
+    db.set_raw_query (q) -> q
+    pg.set_default_connection db
+
+    schema = require "lapis.db.postgres.schema"
 
   after_each ->
     snapshot\revert!
 
   for idx, group in ipairs TESTS
-    it "should match", ->
+    it "should match: #{group[2]}", ->
       output = group[1]!
       if #group > 2
         assert.one_of output, { unpack group, 2 }
@@ -995,3 +1006,384 @@ describe "lapis.db.postgres", ->
       )
 
       assert.same { "hello" }, buffer
+
+  describe "connection lifecycle", ->
+    import run_after_dispatch from require "lapis.nginx.context"
+
+    local connect_count, disconnect_count, connect_logs
+
+    before_each ->
+      require("lapis.db.postgres").set_default_connection nil
+
+      stub(require("lapis.config"), "get").invokes ->
+        {
+          postgres: {
+            application_name: "config_default"
+          }
+        }
+
+      connect_count = 0
+      disconnect_count = 0
+      connect_logs = {}
+
+      import Postgres from require "pgmoon"
+
+      stub(Postgres, "__init").invokes (opts) =>
+        @opts = opts
+        @state = "init"
+
+      stub(Postgres.__base, "connect").invokes =>
+        @state = "connected"
+        connect_count += 1
+        return true
+
+      stub(Postgres.__base, "keepalive").invokes =>
+        @state = "keepalive"
+        disconnect_count += 1
+        return true
+
+      stub(Postgres.__base, "query").invokes (q) =>
+        assert @state == "connected", "You tried to query pgmoon when not connected"
+        {@opts.application_name, q}
+
+      stub(Postgres.__base, "disconnect").invokes =>
+        @state = "disconnected"
+        disconnect_count += 1
+
+      -- no logging needed
+      stub(require("lapis.logging"), "query").invokes ->
+
+      stub(require("lapis.logging"), "db_connection").invokes (...) ->
+        table.insert connect_logs, {...}
+
+    describe "outside nginx", ->
+      it "connects and disconnects", ->
+        conn = assert require("lapis.db.postgres").connect!
+        assert.same {nil, "already connected"}, { require("lapis.db.postgres").connect! }
+        assert require("lapis.db.postgres").disconnect!
+
+        assert.same {
+          opts: {
+            application_name: "config_default"
+            pool_name: "pgmoon_default" -- this has no effect when not in nginx
+          }
+          state: "disconnected"
+        }, conn
+
+      it "connects from query", ->
+        assert.same {
+          "config_default"
+          "hello"
+        }, assert require("lapis.db.postgres").query "hello"
+
+        assert.same {
+          "config_default"
+          "world"
+        }, assert require("lapis.db.postgres").query "world"
+
+        assert.same 1, connect_count
+        assert.same 0, disconnect_count
+
+        require("lapis.db.postgres").disconnect!
+
+        assert.same {
+          "config_default"
+          "flarp"
+        }, assert require("lapis.db.postgres").query "flarp"
+
+        assert.same 2, connect_count
+        assert.same 1, disconnect_count
+
+        assert.same 2, #connect_logs
+
+      it "creates anonymous connection", ->
+        db = require("lapis.db.postgres").configure {
+          application_name: "anonymous"
+        }
+
+        conn = db.connect!
+
+        assert.same 1, connect_count
+        assert.same 0, disconnect_count
+
+        assert.same {
+          state: "connected"
+          opts: { application_name: "anonymous" }
+        }, conn
+
+        db.disconnect!
+
+        assert.same 1, connect_count
+        assert.same 1, disconnect_count
+
+        assert.same {
+          state: "disconnected"
+          opts: { application_name: "anonymous" }
+        }, conn
+
+      it "handles connection failure", ->
+        import Postgres from require "pgmoon"
+
+        -- Override the connect stub to simulate failure
+        stub(Postgres.__base, "connect").invokes =>
+          false, "connection refused"
+
+        assert.has_error(
+          -> require("lapis.db.postgres").query "SELECT 1"
+          "postgres (default) failed to connect: connection refused"
+        )
+
+
+    describe "in ngx", ->
+      local ngx
+
+      before_each ->
+        ngx = {
+          ctx: {}
+          socket: true
+          get_phase: -> "content"
+        }
+
+        _G.ngx = ngx
+
+      after_each ->
+        _G.ngx = nil
+
+      it "stores default connection into the context", ->
+        conn = assert require("lapis.db.postgres").connect!
+
+        assert.same 1, connect_count
+        assert.same 0, disconnect_count
+
+        assert.same {
+          nil, "already connected"
+        }, { require("lapis.db.postgres").connect! }
+
+        assert.same 1, connect_count
+        assert.same 0, disconnect_count
+
+        assert.same {
+          -- allow but ignore this value
+          after_dispatch: ngx.ctx.after_dispatch
+
+          pgmoon_default: {
+            opts: {
+              application_name: "config_default"
+              pool_name: "pgmoon_default"
+            }
+            state: "connected"
+          }
+        }, ngx.ctx
+
+        -- trigger a query from the default connection
+        assert.same {
+          "config_default"
+          "hello!"
+        }, require("lapis.db.postgres").query "hello!"
+
+        -- now trigger the after dispatch to close out the connection
+        run_after_dispatch!
+
+        assert.same 1, connect_count
+        assert.same 1, disconnect_count
+
+        assert.same {
+          -- allow but ignore this value
+          after_dispatch: ngx.ctx.after_dispatch
+
+          -- the connection is removed removed
+        }, ngx.ctx
+
+        -- confirm connection has closed
+        assert.same {
+          opts: {
+            application_name: "config_default"
+            pool_name: "pgmoon_default"
+          }
+          state: "keepalive"
+        }, conn
+
+
+        -- no-op, connection already closed
+        require("lapis.db.postgres").disconnect!
+
+        -- no-op, no after dispatch should be left
+        run_after_dispatch!
+
+        assert.same 1, #connect_logs
+
+        -- assert nil == connect_logs[1][1] -- this is the default connection, which we don't have access to
+
+        assert conn == connect_logs[1][2]
+        assert.true connect_logs[1][3]
+
+      it "after dispatch doesn't fail if connection is manually cosed", ->
+        c = assert require("lapis.db.postgres").connect!
+        assert require("lapis.db.postgres").disconnect!
+
+        assert.same 1, connect_count
+        assert.same 1, disconnect_count
+
+        assert.not.nil ngx.ctx.after_dispatch
+
+        run_after_dispatch!
+
+      it "connects from query", ->
+        assert.same {
+          "config_default"
+          "hello!"
+        }, require("lapis.db.postgres").query "hello!"
+
+        assert.same 1, connect_count
+        assert.same 0, disconnect_count
+
+        assert.same {
+          -- allow but ignore this value
+          after_dispatch: ngx.ctx.after_dispatch
+
+          pgmoon_default: {
+            opts: {
+              application_name: "config_default"
+              pool_name: "pgmoon_default"
+            }
+            state: "connected"
+          }
+        }, ngx.ctx
+
+        -- close connection
+        run_after_dispatch!
+
+        -- it should re-establish the connection
+        assert.same {
+          "config_default"
+          "another"
+        }, require("lapis.db.postgres").query "another"
+
+        assert.same {
+          -- allow but ignore this value
+          after_dispatch: ngx.ctx.after_dispatch
+
+          pgmoon_default: {
+            opts: {
+              application_name: "config_default"
+              pool_name: "pgmoon_default"
+            }
+            state: "connected"
+          }
+        }, ngx.ctx
+
+        assert.same 2, connect_count
+        assert.same 1, disconnect_count
+
+      it "manages custom connection", ->
+        db = require("lapis.db.postgres").configure "alt", {
+          application_name: "alt"
+        }
+
+        alt_conn = assert db.connect!
+
+        assert.same 1, connect_count
+        assert.same 0, disconnect_count
+
+        assert.same {
+          -- allow but ignore this value
+          after_dispatch: ngx.ctx.after_dispatch
+
+          pgmoon_alt: {
+            opts: {
+              application_name: "alt"
+              pool_name: "pgmoon_alt"
+            }
+            state: "connected"
+          }
+        }, ngx.ctx
+
+        -- also connect from default connection
+        default_conn = assert require("lapis.db.postgres").connect!
+
+        assert.same 2, connect_count
+        assert.same 0, disconnect_count
+
+        assert.same {
+          -- allow but ignore this value
+          after_dispatch: ngx.ctx.after_dispatch
+
+          pgmoon_alt: {
+            opts: {
+              application_name: "alt"
+              pool_name: "pgmoon_alt"
+            }
+            state: "connected"
+          }
+
+          pgmoon_default: {
+            opts: {
+              application_name: "config_default"
+              pool_name: "pgmoon_default"
+            }
+            state: "connected"
+          }
+        }, ngx.ctx
+
+        -- will cause all connections to close
+        run_after_dispatch!
+
+        assert.same 2, connect_count
+        assert.same 2, disconnect_count
+
+        assert.same {
+          -- allow but ignore this value
+          after_dispatch: ngx.ctx.after_dispatch
+
+        }, ngx.ctx
+
+        assert.same {
+          opts: {
+            application_name: "alt"
+            pool_name: "pgmoon_alt"
+          }
+          state: "keepalive"
+        }, alt_conn
+
+        assert.same {
+          opts: {
+            application_name: "config_default"
+            pool_name: "pgmoon_default"
+          }
+          state: "keepalive"
+        }, default_conn
+
+        assert.same 2, #connect_logs
+        assert alt_conn == connect_logs[1][2]
+        assert default_conn == connect_logs[2][2]
+
+      it "disconnect before connect is safe", ->
+        db = require("lapis.db.postgres").configure { application_name: "test" }
+        assert.nil (db.disconnect!)
+
+      -- connection with pool name
+      it "creates anonymous connection", ->
+        db =  require("lapis.db.postgres").configure {
+          application_name: "anonymous"
+        }
+
+        conn = db.connect!
+
+        assert.same 1, connect_count
+        assert.same 0, disconnect_count
+
+        assert.same {
+          state: "connected"
+          opts: { application_name: "anonymous" }
+        }, conn
+
+
+        run_after_dispatch!
+
+        assert.same 1, connect_count
+        assert.same 1, disconnect_count
+
+        assert.same {
+          state: "keepalive"
+          opts: { application_name: "anonymous" }
+        }, conn

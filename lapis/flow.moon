@@ -1,14 +1,35 @@
 
-import type, getmetatable, setmetatable, rawset from _G
+import type, getmetatable, setmetatable, rawset, rawget from _G
+
+unpack = table.unpack or unpack
 
 local Flow
 
-is_flow = (cls) ->
+is_flow_class = (cls) ->
   return false unless cls
   return true if cls == Flow
-  is_flow cls.__parent
+  is_flow_class cls.__parent
 
--- a mediator for encapsulating logic between multiple models and a request
+MEMO_KEY = setmetatable {}, __tostring: -> "::memo_key::"
+
+-- cache the result of a method after first invocation. Arguments for
+-- subsequent calls are ignored
+memo = (fn) ->
+  (...) =>
+    cache = rawget @, MEMO_KEY
+
+    unless cache
+      cache = {}
+      rawset @, MEMO_KEY, cache
+
+    unless cache[fn]
+      cache[fn] = {fn @, ...}
+
+    unpack cache[fn]
+
+-- A flow is a object that forwards all methods and property access that don't
+-- exist on the flow to the wrapped object. This allows you to encapsulate
+-- functionality within the scope of the Flow class
 class Flow
   expose_assigns: false
 
@@ -19,8 +40,6 @@ class Flow
       tbl = name
       name = nil
 
-    class_fields = { }
-
     cls = lua.class name or "ExtendedFlow", tbl, @
     cls, cls.__base
 
@@ -29,7 +48,7 @@ class Flow
     @_req = @_ -- TODO: for legacy flows
 
     -- get the real request if the object passed is another flow
-    if is_flow @_.__class
+    if is_flow_class @_.__class
       @_ = @_._
 
     old_mt = getmetatable @
@@ -68,4 +87,4 @@ class Flow
     setmetatable @, mt
 
 
-{ :Flow, :is_flow }
+{ :Flow, :is_flow_class, :MEMO_KEY, :memo }

@@ -1,5 +1,6 @@
 local logger = require("lapis.logging")
 local lapis_config = require("lapis.config")
+local coroutine = require("lapis.coroutine")
 local Router
 Router = require("lapis.router").Router
 local insert
@@ -339,7 +340,6 @@ do
       tbl = name
       name = nil
     end
-    local class_fields = { }
     local cls = lua.class(name or "ExtendedApplication", tbl, self)
     return cls, cls.__base
   end

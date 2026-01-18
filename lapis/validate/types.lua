@@ -7,6 +7,7 @@ local instance_of
 instance_of = require("tableshape.moonscript").instance_of
 local yield_error
 yield_error = require("lapis.application").yield_error
+local coroutine = require("lapis.coroutine")
 local unpack = unpack or table.unpack
 local indent
 indent = function(str)
@@ -109,7 +110,12 @@ do
           if validation.error then
             table.insert(errors, validation.error)
           else
-            local error_prefix = tostring(validation.label or validation.field) .. ": "
+            local error_prefix
+            if validation.label == false then
+              error_prefix = ""
+            else
+              error_prefix = tostring(validation.label or validation.field) .. ": "
+            end
             if self.error_prefix then
               error_prefix = tostring(self.error_prefix) .. ": " .. tostring(error_prefix)
             end
@@ -198,10 +204,10 @@ do
   test_input_type = types.table
   is_base_type = instance_of(BaseType)
   param_validator_spec = types.annotate(types.shape({
-    types.string:tag("field"),
+    (types.string + types.number):tag("field"),
     is_base_type:describe("tableshape type"):tag("type"),
     error = types["nil"] + types.string:tag("error"),
-    label = types["nil"] + types.string:tag("label"),
+    label = types["nil"] + (types.string + types.literal(false)):tag("label"),
     as = types["nil"] + types.string:tag("as")
   }), {
     format_error = function(self, val, err)
@@ -213,10 +219,303 @@ do
   end
   ParamsShapeType = _class_0
 end
+local ParamsMapType
+do
+  local _class_0
+  local test_input_type
+  local _parent_0 = BaseType
+  local _base_0 = {
+    iter = pairs,
+    item_prefix = "item",
+    join_error = function(self, err, key, value, error_type)
+      local _exp_0 = error_type
+      if "key" == _exp_0 then
+        return tostring(self.item_prefix) .. " key: " .. tostring(err)
+      else
+        return tostring(self.item_prefix) .. " " .. tostring(key) .. ": " .. tostring(err)
+      end
+    end,
+    _transform = function(self, input_value, state)
+      local pass, err = test_input_type(input_value)
+      if not (pass) then
+        return FailedTransform, {
+          "params map: " .. tostring(err)
+        }
+      end
+      local errors
+      local push_error
+      push_error = function(err, ...)
+        errors = errors or { }
+        local _exp_0 = type(err)
+        if "table" == _exp_0 then
+          for _index_0 = 1, #err do
+            local e = err[_index_0]
+            table.insert(errors, self:join_error(e, ...))
+          end
+        elseif "string" == _exp_0 then
+          return table.insert(errors, self:join_error(err, ...))
+        end
+      end
+      local out = { }
+      for key, value in self.iter(input_value) do
+        local _continue_0 = false
+        repeat
+          local pair_state = state
+          local new_key, state_or_err = self.key_type:_transform(key, pair_state)
+          if new_key == FailedTransform then
+            push_error(state_or_err, key, value, "key")
+            _continue_0 = true
+            break
+          else
+            pair_state = state_or_err
+          end
+          local new_value
+          new_value, state_or_err = self.value_type:_transform(value, pair_state)
+          if new_value == FailedTransform then
+            push_error(state_or_err, key, value, "value")
+            _continue_0 = true
+            break
+          else
+            pair_state = state_or_err
+          end
+          if new_key ~= nil and new_value ~= nil then
+            out[new_key] = new_value
+          end
+          state = pair_state
+          _continue_0 = true
+        until true
+        if not _continue_0 then
+          break
+        end
+      end
+      if errors then
+        return FailedTransform, errors
+      end
+      return out, state
+    end
+  }
+  _base_0.__index = _base_0
+  setmetatable(_base_0, _parent_0.__base)
+  _class_0 = setmetatable({
+    __init = function(self, key_type, value_type, opts)
+      self.key_type, self.value_type = key_type, value_type
+      if opts then
+        self.item_prefix = opts.item_prefix
+        self.iter = opts.iter
+        self.join_error = opts.join_error
+      end
+    end,
+    __base = _base_0,
+    __name = "ParamsMapType",
+    __parent = _parent_0
+  }, {
+    __index = function(cls, name)
+      local val = rawget(_base_0, name)
+      if val == nil then
+        local parent = rawget(cls, "__parent")
+        if parent then
+          return parent[name]
+        end
+      else
+        return val
+      end
+    end,
+    __call = function(cls, ...)
+      local _self_0 = setmetatable({}, _base_0)
+      cls.__init(_self_0, ...)
+      return _self_0
+    end
+  })
+  _base_0.__class = _class_0
+  local self = _class_0
+  self.ordered_pairs = function(obj)
+    return coroutine.wrap(function()
+      local keys = { }
+      for k in pairs(obj) do
+        table.insert(keys, k)
+      end
+      table.sort(keys)
+      for _index_0 = 1, #keys do
+        local k = keys[_index_0]
+        coroutine.yield(k, obj[k])
+      end
+    end)
+  end
+  test_input_type = types.table
+  if _parent_0.__inherited then
+    _parent_0.__inherited(_parent_0, _class_0)
+  end
+  ParamsMapType = _class_0
+end
+local ParamsArrayType
+do
+  local _class_0
+  local test_input_type
+  local _parent_0 = BaseType
+  local _base_0 = {
+    iter = ipairs,
+    item_prefix = "item",
+    join_error = function(self, err, idx, item)
+      return tostring(self.item_prefix) .. " " .. tostring(idx) .. ": " .. tostring(err)
+    end,
+    _transform = function(self, value, state)
+      local pass, err = test_input_type(value)
+      if not (pass) then
+        return FailedTransform, {
+          "params array: " .. tostring(err)
+        }
+      end
+      if self.length_type then
+        local len = #value
+        local res
+        res, state = self.length_type:_transform(len, state)
+        if res == FailedTransform then
+          return FailedTransform, {
+            "length expected " .. tostring(self.length_type)
+          }
+        end
+      end
+      local errors
+      local out
+      do
+        local _accum_0 = { }
+        local _len_0 = 1
+        for idx, item in self.iter(value) do
+          local _continue_0 = false
+          repeat
+            local result, state_or_err = self.item_shape:_transform(item, state)
+            local _value_0
+            if result == FailedTransform then
+              if not (errors) then
+                errors = { }
+              end
+              local _exp_0 = type(state_or_err)
+              if "table" == _exp_0 then
+                for _index_0 = 1, #state_or_err do
+                  local err = state_or_err[_index_0]
+                  table.insert(errors, self:join_error(err, idx, item))
+                end
+              elseif "string" == _exp_0 then
+                table.insert(errors, self:join_error(state_or_err, idx, item))
+              end
+              _continue_0 = true
+              break
+            else
+              state = state_or_err
+              _value_0 = result
+            end
+            _accum_0[_len_0] = _value_0
+            _len_0 = _len_0 + 1
+            _continue_0 = true
+          until true
+          if not _continue_0 then
+            break
+          end
+        end
+        out = _accum_0
+      end
+      if errors then
+        return FailedTransform, errors
+      end
+      return out, state
+    end
+  }
+  _base_0.__index = _base_0
+  setmetatable(_base_0, _parent_0.__base)
+  _class_0 = setmetatable({
+    __init = function(self, item_shape, opts)
+      self.item_shape = item_shape
+      if opts then
+        self.item_prefix = opts.item_prefix
+        self.iter = opts.iter
+        self.join_error = opts.join_error
+        self.length_type = opts.length
+      end
+    end,
+    __base = _base_0,
+    __name = "ParamsArrayType",
+    __parent = _parent_0
+  }, {
+    __index = function(cls, name)
+      local val = rawget(_base_0, name)
+      if val == nil then
+        local parent = rawget(cls, "__parent")
+        if parent then
+          return parent[name]
+        end
+      else
+        return val
+      end
+    end,
+    __call = function(cls, ...)
+      local _self_0 = setmetatable({}, _base_0)
+      cls.__init(_self_0, ...)
+      return _self_0
+    end
+  })
+  _base_0.__class = _class_0
+  local self = _class_0
+  test_input_type = types.table
+  if _parent_0.__inherited then
+    _parent_0.__inherited(_parent_0, _class_0)
+  end
+  ParamsArrayType = _class_0
+end
+local FlattenErrors
+do
+  local _class_0
+  local _parent_0 = BaseType
+  local _base_0 = {
+    _transform = function(self, value, state)
+      local state_or_err
+      value, state_or_err = self.type:_transform(value, state)
+      if value == FailedTransform then
+        local _exp_0 = type(state_or_err)
+        if "table" == _exp_0 then
+          return FailedTransform, table.concat(state_or_err, ", ")
+        elseif "string" == _exp_0 then
+          local _ = FailedTransform, state_or_err
+        end
+      end
+      return value, state_or_err
+    end
+  }
+  _base_0.__index = _base_0
+  setmetatable(_base_0, _parent_0.__base)
+  _class_0 = setmetatable({
+    __init = function(self, type)
+      self.type = type
+    end,
+    __base = _base_0,
+    __name = "FlattenErrors",
+    __parent = _parent_0
+  }, {
+    __index = function(cls, name)
+      local val = rawget(_base_0, name)
+      if val == nil then
+        local parent = rawget(cls, "__parent")
+        if parent then
+          return parent[name]
+        end
+      else
+        return val
+      end
+    end,
+    __call = function(cls, ...)
+      local _self_0 = setmetatable({}, _base_0)
+      cls.__init(_self_0, ...)
+      return _self_0
+    end
+  })
+  _base_0.__class = _class_0
+  if _parent_0.__inherited then
+    _parent_0.__inherited(_parent_0, _class_0)
+  end
+  FlattenErrors = _class_0
+end
 local MultiParamsType
 do
   local _class_0
-  local is_params_type
   local _parent_0 = BaseType
   local _base_0 = {
     _transform = function(self, value, state)
@@ -287,8 +586,6 @@ do
     end
   })
   _base_0.__class = _class_0
-  local self = _class_0
-  is_params_type = instance_of(ParamsShapeType)
   if _parent_0.__inherited then
     _parent_0.__inherited(_parent_0, _class_0)
   end
@@ -345,7 +642,7 @@ limited_text = function(max_len, min_len)
 end
 local truncated_text
 truncated_text = function(len)
-  assert(len, "missing length for shapes.truncated_text")
+  assert(len, "missing length for types.truncated_text")
   return trimmed_text * types.one_of({
     types.string:length(0, len),
     types.string / function(s)
@@ -371,7 +668,7 @@ local db_id = (types.one_of({
 }) * types.range(0, 2147483647)):describe("database ID integer")
 local db_enum
 db_enum = function(e)
-  assert(e, "missing enum for shapes.db_enum")
+  assert(e, "missing enum for types.db_enum")
   local for_db
   do
     local _base_0 = e
@@ -400,6 +697,9 @@ local file_upload = types.partial({
 }):describe("file upload")
 return setmetatable({
   params_shape = ParamsShapeType,
+  params_array = ParamsArrayType,
+  params_map = ParamsMapType,
+  flatten_errors = FlattenErrors,
   multi_params = MultiParamsType,
   assert_error = AssertErrorType,
   cleaned_text = cleaned_text,

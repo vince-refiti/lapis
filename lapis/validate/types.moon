@@ -4,6 +4,8 @@ import instance_of from require "tableshape.moonscript"
 
 import yield_error from require "lapis.application"
 
+coroutine = require "lapis.coroutine"
+
 unpack = unpack or table.unpack
 
 indent = (str) ->
@@ -35,13 +37,13 @@ class ParamsShapeType extends BaseType
   is_base_type = instance_of BaseType
 
   param_validator_spec = types.annotate types.shape({
-    types.string\tag "field"
+    (types.string + types.number)\tag "field"
 
      -- TODO: AssertErrorType should be unwrapped so we don't yield error when processing nested object
     is_base_type\describe("tableshape type")\tag "type"
 
     error: types.nil + types.string\tag "error"
-    label: types.nil + types.string\tag "label"
+    label: types.nil + (types.string + types.literal(false))\tag "label"
     as: types.nil + types.string\tag "as"
   }), format_error: (val, err) => "params_shape: Invalid validation specification object: #{err}"
 
@@ -80,7 +82,11 @@ class ParamsShapeType extends BaseType
         if validation.error -- override error message
           table.insert errors, validation.error
         else
-          error_prefix = "#{validation.label or validation.field}: "
+          error_prefix = if validation.label == false
+            ""
+          else
+            "#{validation.label or validation.field}: "
+
           if @error_prefix
             error_prefix = "#{@error_prefix}: #{error_prefix}"
 
@@ -110,6 +116,159 @@ class ParamsShapeType extends BaseType
       "params type {\n  #{table.concat rows, "\n  "}\n}"
 
 
+-- tests every key, value pair in the table
+-- types.params_map(types.db_id, types.params_shape {...})
+class ParamsMapType extends BaseType
+  @ordered_pairs: (obj) ->
+    coroutine.wrap ->
+      keys = {}
+      for k in pairs obj
+        table.insert keys, k
+
+      table.sort keys
+
+      for k in *keys
+        coroutine.yield k, obj[k]
+
+  test_input_type = types.table
+
+  iter: pairs
+  item_prefix: "item"
+
+  new: (@key_type, @value_type, opts) =>
+    if opts
+      @item_prefix = opts.item_prefix
+      @iter = opts.iter
+      @join_error = opts.join_error
+
+  join_error: (err, key, value, error_type) =>
+    switch error_type
+      when "key"
+        "#{@item_prefix} key: #{err}"
+      else
+        "#{@item_prefix} #{key}: #{err}"
+
+  _transform: (input_value, state) =>
+    pass, err = test_input_type input_value
+    unless pass
+      return FailedTransform, {"params map: #{err}"}
+
+    local errors
+
+    push_error = (err, ...) ->
+      errors or= {}
+
+      switch type(err)
+        -- append all errors
+        when "table"
+          for e in *err
+            table.insert errors, @join_error e, ...
+        when "string"
+          table.insert errors, @join_error err, ...
+
+    out = {}
+
+    for key, value in @.iter input_value
+      pair_state = state
+
+      -- test if key validates
+      new_key, state_or_err = @key_type\_transform key, pair_state
+      if new_key == FailedTransform
+        push_error state_or_err, key, value, "key"
+        -- Note that if the key fails, we bypass the value test
+        continue
+      else
+        pair_state = state_or_err
+
+      -- test if value validates
+      new_value, state_or_err = @value_type\_transform value, pair_state
+      if new_value == FailedTransform
+        push_error state_or_err, key, value, "value"
+        continue
+      else
+        pair_state = state_or_err
+
+      if new_key != nil and new_value != nil
+        out[new_key] = new_value
+
+      state = pair_state
+
+    if errors
+      return FailedTransform, errors
+
+    out, state
+
+-- applies a params_shape to each item of array. This is necessary because
+-- params_shape returns a special errors object
+class ParamsArrayType extends BaseType
+  test_input_type = types.table
+
+  iter: ipairs
+  item_prefix: "item"
+
+  new: (@item_shape, opts) =>
+    if opts
+      @item_prefix = opts.item_prefix
+      @iter = opts.iter
+      @join_error = opts.join_error
+      @length_type = opts.length
+
+  join_error: (err, idx, item) =>
+    "#{@item_prefix} #{idx}: #{err}"
+
+  _transform: (value, state) =>
+    pass, err = test_input_type value
+    unless pass
+      return FailedTransform, {"params array: #{err}"}
+
+    if @length_type
+      len = #value
+      res, state = @length_type\_transform len, state
+      if res == FailedTransform
+        return FailedTransform, {"length expected #{@length_type}"}
+
+    local errors
+
+    out = for idx, item in @.iter value
+      result, state_or_err = @item_shape\_transform item, state
+
+      if result == FailedTransform
+        errors = {} unless errors
+
+        switch type(state_or_err)
+          -- append all errors
+          when "table"
+            for err in *state_or_err
+              table.insert errors, @join_error err, idx, item
+          when "string"
+            table.insert errors, @join_error state_or_err, idx, item
+        continue
+      else
+        state = state_or_err
+        result
+
+    if errors
+      return FailedTransform, errors
+
+    out, state
+
+-- convert the array-like error message to a single string error messag
+class FlattenErrors extends BaseType
+  new: (@type) =>
+
+  _transform: (value, state) =>
+    value, state_or_err = @type\_transform value, state
+
+    if value == FailedTransform
+      switch type(state_or_err)
+        -- append all errors
+        when "table"
+          return FailedTransform, table.concat state_or_err, ", "
+        when "string"
+          FailedTransform, state_or_err
+
+    value, state_or_err
+
 -- Combines multiple params_shapes into a single result. Each params object is
 -- tested in order, and the entire result set is joined into a final object.
 -- All of them must pass. the joint error message is returned. receives an
@@ -120,8 +279,6 @@ class ParamsShapeType extends BaseType
 --   types.params_shape { name: types.string }
 -- }
 class MultiParamsType extends BaseType
-  is_params_type = instance_of ParamsShapeType
-
   new: (@params_shapes={}) =>
 
   _transform: (value, state) =>
@@ -186,7 +343,7 @@ limited_text = (max_len, min_len=1) ->
   out\describe "text between #{min_len} and #{max_len} characters"
 
 truncated_text = (len) ->
-  assert len, "missing length for shapes.truncated_text"
+  assert len, "missing length for types.truncated_text"
 
   trimmed_text * types.one_of({
     types.string\length 0, len
@@ -209,7 +366,7 @@ db_id = (types.one_of({
 }) * types.range(0, 2147483647))\describe "database ID integer"
 
 db_enum = (e) ->
-  assert e, "missing enum for shapes.db_enum"
+  assert e, "missing enum for types.db_enum"
   for_db = e\for_db
 
   names = { unpack e }
@@ -231,8 +388,13 @@ file_upload = types.partial({
   content: -types.literal("")
 })\describe "file upload"
 
+
 setmetatable {
   params_shape: ParamsShapeType
+  params_array: ParamsArrayType
+  params_map: ParamsMapType
+  flatten_errors: FlattenErrors
+
   multi_params: MultiParamsType
   assert_error: AssertErrorType
 

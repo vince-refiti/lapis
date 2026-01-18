@@ -536,18 +536,27 @@ describe "lapis.db.model.relations", ->
 
   it "make has_many getter", ->
     models.Posts = class extends Model
+    models.Things = class extends Model
+
     models.Users = class extends Model
       @relations: {
         {"posts", has_many: "Posts"}
         {"more_posts", has_many: "Posts", where: {color: "blue"}}
         {"fresh_posts", has_many: "Posts", order: "id desc"}
-      }
 
+        {"with_key", has_many: "Things", key: "object_id", order: "id desc"}
+
+        {"with_key_where", has_many: "Things", key: "object_id", where: {
+          {"object_type = ?", 1}
+        }, order: "id desc"}
+      }
 
     assert_queries {
       [[SELECT * FROM "posts" WHERE "user_id" = 1234]]
       [[SELECT * FROM "posts" WHERE "user_id" = 1234 AND "color" = 'blue']]
       [[SELECT * FROM "posts" WHERE "user_id" = 1234 ORDER BY id desc]]
+      [[SELECT * FROM "things" WHERE "object_id" = 1234 ORDER BY id desc]]
+      [[SELECT * FROM "things" WHERE "object_id" = 1234 AND (object_type = 1) ORDER BY id desc]]
     }, ->
       user = models.Users\load id: 1234
 
@@ -556,6 +565,9 @@ describe "lapis.db.model.relations", ->
 
       user\get_more_posts!
       user\get_fresh_posts!
+
+      user\get_with_key!
+      user\get_with_key_where!
 
   it "makes has many with db.clause", ->
     models.Posts = class extends Model
@@ -791,9 +803,10 @@ describe "lapis.db.model.relations", ->
     assert.same nil, rawget Child, "get_user"
 
   describe "polymorphic belongs to", ->
-    local Foos, Bars, Bazs, Items
+    local Foos, Bars, Bazs, Items, preload
 
     before_each ->
+      import preload from require "lapis.db.model"
       models.Foos = class Foos extends Model
       models.Bars = class Bars extends Model
         @primary_key: "frog_index"
@@ -931,6 +944,39 @@ describe "lapis.db.model.relations", ->
         'SELECT a, b FROM "bars" WHERE "frog_index" IN (112)'
         'SELECT c, d FROM "bazs" WHERE "id" IN (113)'
       }
+
+    it "preloads with skip_included option", ->
+      foo = models.Foos\load {
+        id: 111
+      }
+
+      items = {
+        Items\load {
+          object_type: 1
+          object_id: 111
+          object: foo
+        }
+
+        Items\load {
+          object_type: 1
+          object_id: 222
+        }
+
+        Items\load {
+          object_type: 2
+          object_id: 333
+        }
+      }
+
+      assert_queries {
+        'SELECT * FROM "foos" WHERE "id" IN (222)'
+        'SELECT * FROM "bars" WHERE "frog_index" IN (333)'
+      }, ->
+        preload items, object: {
+          [preload]: {
+            skip_included: true
+          }
+        }
 
   it "finds relation", ->
     import find_relation from require "lapis.db.model.relations"
@@ -1804,14 +1850,40 @@ describe "lapis.db.model.relations", ->
         [[SELECT * FROM "user_data" WHERE "user_id" IN (11, 12)]]
       }, sorted: true
 
-    it "passes preload opts", ->
+    it "preloads a fetch that returns basic value", ->
+      class Items extends Model
+        @relations: {
+          {"things",
+            many: true
+            fetch: => error "should not be called"
+            preload: (items, ...) ->
+              for item in *items
+                item.things = {true, true, false}
+          }
+
+
+          {"thing",
+            fetch: => error "should not be called"
+            preload: (items, ...) ->
+              for item in *items
+                item.thing = true -- store a boolean
+          }
+        }
+
+      items = {Items!}
+      preload items, things: {}, thing: {}
+      assert.same {true, true, false}, items[1].things
+      assert.same true, items[1].thing
+
+
+    it "passes preload opts to fetch relation", ->
       local preload_objects, preload_opts
 
       class Item extends Model
         @relations: {
           {"things",
             many: true
-            fetch: => error "no fetch me"
+            fetch: => error "should not be called"
             preload: (...) ->
               preload_objects, preload_opts = ...
           }
@@ -1822,6 +1894,7 @@ describe "lapis.db.model.relations", ->
       preload items, things: {
         [preload]: {
           fields: "blue"
+          random: "option"
         }
       }
 
@@ -1830,7 +1903,27 @@ describe "lapis.db.model.relations", ->
 
       assert.same {
         fields: "blue"
+        random: "option"
       }, preload_opts
+
+    it "with skip_included preload option", ->
+      models.Items = class Items extends Model
+        @relations: {
+          {"parents", has_many: "Items", key: "parent_id"}
+        }
+
+      items = {
+        Items\load { id: 123, parents: {} } -- this one already has it
+        Items\load { id: 234 }
+      }
+
+      preload items, parents: {
+        [preload]: { fields: "what", skip_included: true }
+      }
+
+      assert_queries {
+        [[SELECT what FROM "items" WHERE "parent_id" IN (234)]]
+      }
 
     describe "optional relations", ->
       it "single optional relation", ->
@@ -2015,4 +2108,151 @@ describe "lapis.db.model.relations", ->
           for the_thing in *things[3].the_things
             assert.truthy the_thing.friend
             assert.equal the_thing, the_thing.friend.parent
+
+  describe "computed keys", ->
+    it "belongs_to fails on use of computed keys", ->
+      import preload from require "lapis.db.model"
+      assert.has_error(
+        ->
+          models.UserGroups = class UserGroups extends Model
+          models.Users = class Users extends Model
+            @relations: {
+              {"user_group", belongs_to: "UserGroup", key: {
+                group_id: (user) -> "group-#{user.name}"
+              }}
+            }
+
+        "`belongs_to` relation doesn't support composite key or computed key, use `has_one` instead"
+      )
+
+    it "has_one with computed key", ->
+      import preload from require "lapis.db.model"
+      models.Users = class Users extends Model
+        @relations: {
+          {"user_profile", has_one: "UserProfiles", key: {
+            user_id: (user) -> "uid-#{user.id}"
+          }}
+        }
+
+      models.UserProfiles = class UserProfiles extends Model
+
+      do
+        user = Users!
+        user.id = 123
+        user\get_user_profile!
+
+      do
+        u1 = Users!
+        u1.id = 123
+        u2 = Users!
+        u2.id = 999
+
+        preload {u1, u2}, "user_profile"
+
+      assert_queries {
+        [[SELECT * FROM "user_profiles" WHERE "user_id" = 'uid-123' LIMIT 1]]
+        [[SELECT * FROM "user_profiles" WHERE "user_id" IN ('uid-123', 'uid-999')]]
+      }
+
+    it "has_many with computed key", ->
+      import preload from require "lapis.db.model"
+      models.Users = class Users extends Model
+        @relations: {
+          {"tags", has_many: "UserTags", key: {
+            user_id: (user) -> "uid-#{user.id}"
+          }}
+        }
+
+      models.UserTags = class UserTags extends Model
+
+      do
+        user = Users!
+        user.id = 123
+        user\get_tags!
+
+      do
+        u1 = Users!
+        u1.id = 123
+        u2 = Users!
+        u2.id = 999
+
+        preload {u1, u2}, "tags"
+
+      assert_queries {
+        [[SELECT * FROM "user_tags" WHERE "user_id" = 'uid-123']]
+        [[SELECT * FROM "user_tags" WHERE "user_id" IN ('uid-123', 'uid-999')]]
+      }
+
+    describe "has_many with computed key returning list", ->
+      local Users, UserTags
+
+      before_each ->
+        models.Users = class Users extends Model
+          @relations: {
+            {"tags", has_many: "UserTags", key: {
+              user_id: (user) -> db.list user.tag_owner_ids
+            }}
+          }
+
+        models.UserTags = class UserTags extends Model
+
+
+      it "fetches with getter", ->
+        mock_query "SELECT", {
+          { id: 101, user_id: 10 }
+          { id: 102, user_id: 20 }
+        }
+
+
+        user = Users\load {
+          tag_owner_ids: {10, 20}
+        }
+
+        assert.same {
+          { id: 101, user_id: 10 }
+          { id: 102, user_id: 20 }
+        }, user\get_tags!
+
+        assert_queries {
+          [[SELECT * FROM "user_tags" WHERE "user_id" IN (10, 20)]]
+        }
+
+      it "preloads", ->
+        mock_query "SELECT", {
+          { id: 201, user_id: 20 }
+          { id: 202, user_id: 30 }
+          { id: 203, user_id: 40 }
+        }
+
+        import preload from require "lapis.db.model"
+        users = {
+          Users\load {
+            tag_owner_ids: {20}
+          }
+          Users\load {
+            tag_owner_ids: {30, 40}
+          }
+          Users\load {
+            tag_owner_ids: {10, 20}
+          }
+        }
+
+        preload users, "tags"
+
+        assert_queries {
+          [[SELECT * FROM "user_tags" WHERE "user_id" IN (20, 30, 40, 10)]]
+        }
+
+        assert.same {
+          { id: 201, user_id: 20 }
+        }, users[1].tags
+
+        assert.same {
+          { id: 202, user_id: 30 }
+          { id: 203, user_id: 40 }
+        }, users[2].tags
+
+        assert.same {
+          { id: 201, user_id: 20 }
+        }, users[3].tags
 

@@ -1,64 +1,13 @@
-
 lapis = require "lapis"
 
 require "spec.helpers" -- defines assert.one_of
 
 import
-  mock_request
-  mock_action
+  simulate_request
+  simulate_action
   assert_request
   stub_request
   from require "lapis.spec.request"
-
-describe "lapis.spec.request", ->
-  describe "mock_request", ->
-    class App extends lapis.Application
-      "/hello": =>
-
-    it "should mock a request", ->
-      assert.same 200, (mock_request App, "/hello")
-      assert.has_error ->
-        mock_request App, "/world"
-
-    it "should mock a request with double headers", ->
-      mock_request App, "/hello", {
-        method: "POST"
-        headers: {
-          ["Content-type"]: {
-            "hello"
-            "world"
-          }
-        }
-      }
-
-    it "should mock request with session", ->
-      class SessionApp extends lapis.Application
-        "/test-session": =>
-          import flatten_session from require "lapis.session"
-          assert.same {
-            color: "hello"
-            height: {1,2,3,4}
-          }, flatten_session @session
-
-      mock_request SessionApp, "/test-session", {
-        session: {
-          color: "hello"
-          height: {1,2,3,4}
-        }
-      }
-
-  describe "mock_action action", ->
-    it "should mock action", ->
-      assert.same "hello", mock_action lapis.Application, "/hello", {}, ->
-        "hello"
-
-  describe "stub_request", ->
-    class SomeApp extends lapis.Application
-      [cool_page: "/cool/:name"]: =>
-
-    it "should stub a request object", ->
-      req = stub_request SomeApp, "/"
-      assert.same "/cool/world", req\url_for "cool_page", name: "world"
 
 describe "lapis.request", ->
   describe "session", ->
@@ -86,16 +35,16 @@ describe "lapis.request", ->
         params = @params
 
     it "mocks request with query params", ->
-      assert.same 200, (mock_request QueryApp, "/hello?hello=world")
+      assert.same 200, (simulate_request QueryApp, "/hello?hello=world")
       assert.same {hello: "world"}, params
 
     it "mocks request with query params #bug", ->
-      assert.same 200, (mock_request QueryApp, "/hello?null")
+      assert.same 200, (simulate_request QueryApp, "/hello?null")
       -- todo: this is bug
       assert.same {}, params
 
     it "parses nested params", ->
-      assert.same 200, (mock_request QueryApp, "/hello?upload[1][color]=red&upload[1][height]=12m&upload[2]=hmm&upload[3][3][3]=yeah")
+      assert.same 200, (simulate_request QueryApp, "/hello?upload[1][color]=red&upload[1][height]=12m&upload[2]=hmm&upload[3][3][3]=yeah")
       assert.same {
         upload: {
           "1": {
@@ -112,7 +61,7 @@ describe "lapis.request", ->
       }, params
 
     it "parses params with [1] and overlapping name", ->
-      assert.same 200, (mock_request QueryApp, "/hello?p=a&p=x&p[1]=y")
+      assert.same 200, (simulate_request QueryApp, "/hello?p=a&p=x&p[1]=y")
 
       -- due to hash table ordering this can be one or the other
       assert.one_of params, {
@@ -121,7 +70,7 @@ describe "lapis.request", ->
       }
 
     it "parses duplicate with empty []", ->
-      assert.same 200, (mock_request QueryApp, "/hello?test=100&other[1]=world&thing[]=1&thing[]=2")
+      assert.same 200, (simulate_request QueryApp, "/hello?test=100&other[1]=world&thing[]=1&thing[]=2")
       -- ambiguous hash table ordering means we don't know which one is written on top
       assert.one_of params, {
         {
@@ -137,7 +86,7 @@ describe "lapis.request", ->
       }
 
     it "parses undefined behavior", ->
-      assert.same 200, (mock_request QueryApp, "/hello?one[a][][]=y&two[][f][b]=x&three[q][][e]=n&four[][][]=2")
+      assert.same 200, (simulate_request QueryApp, "/hello?one[a][][]=y&two[][f][b]=x&three[q][][e]=n&four[][][]=2")
 
       assert.same {
         one: {
@@ -206,7 +155,7 @@ describe "lapis.request", ->
         layout: false
         "/": fn
 
-      mock_request A, "/", ...
+      simulate_request A, "/", ...
 
     it "writes nothing, sets default content type", ->
       status, body, h = write ->
@@ -275,7 +224,7 @@ describe "lapis.request", ->
           json: getmetatable(@cookies).__index
 
       it "should return empty with no cookie header", ->
-        _, res = mock_request PrintCookieApp, "/", {
+        _, res = simulate_request PrintCookieApp, "/", {
           expect: "json"
           headers: { }
         }
@@ -283,7 +232,7 @@ describe "lapis.request", ->
         assert.same { }, res
 
       it "should read basic cookie", ->
-        _, res = mock_request PrintCookieApp, "/", {
+        _, res = simulate_request PrintCookieApp, "/", {
           expect: "json"
           headers: {
             cookie: "hello=world"
@@ -295,7 +244,7 @@ describe "lapis.request", ->
         }, res
 
       it "should merge cookies when there are multiple headers", ->
-        _, res = mock_request PrintCookieApp, "/", {
+        _, res = simulate_request PrintCookieApp, "/", {
           expect: "json"
           headers: {
             cookie: {
@@ -328,11 +277,11 @@ describe "lapis.request", ->
         "/": => @cookies.world = 34
 
       it "should write a cookie", ->
-        _, _, h = mock_request CookieApp, "/"
+        _, _, h = simulate_request CookieApp, "/"
         assert.same "world=34; Path=/; HttpOnly", h["Set-Cookie"]
 
       it "should write multiple cookies", ->
-        _, _, h = mock_request CookieApp, "/many"
+        _, _, h = simulate_request CookieApp, "/many"
 
         assert.one_of h["Set-Cookie"], {
           {
@@ -346,7 +295,7 @@ describe "lapis.request", ->
         }
 
       it "should write a cookie with cookie attributes", ->
-        _, _, h = mock_request CookieApp2, "/"
+        _, _, h = simulate_request CookieApp2, "/"
         assert.same "world=34; Path=/; Secure; Domain=.leafo.net;", h["Set-Cookie"]
 
       it "should set cookie attributes with lua app", ->
@@ -357,7 +306,7 @@ describe "lapis.request", ->
         app\get "/", =>
           @cookies.world = 34
 
-        _, _, h = mock_request app, "/"
+        _, _, h = simulate_request app, "/"
         assert.same "world=34; Path=/; Secure; Domain=.leafo.net;", h["Set-Cookie"]
 
 
@@ -379,14 +328,14 @@ describe "lapis.request", ->
             json: { success: true }
         }
 
-      _, res, h = mock_request CsrfApp, "/form", {
+      _, res, h = simulate_request CsrfApp, "/form", {
         expect: "json"
       }
 
       assert res.csrf_token, "missing csrf token"
       assert h.set_cookie, "missing cookie"
 
-      _, post_res = mock_request CsrfApp, "/form", {
+      _, post_res = simulate_request CsrfApp, "/form", {
         post: {
           csrf_token: res.csrf_token
         }
@@ -397,7 +346,7 @@ describe "lapis.request", ->
       assert.same { success: true }, post_res
 
       -- no cookie set, fails
-      _, post_res = mock_request CsrfApp, "/form", {
+      _, post_res = simulate_request CsrfApp, "/form", {
         post: {
           csrf_token: res.csrf_token
         }
@@ -411,7 +360,7 @@ describe "lapis.request", ->
       }, post_res
 
       -- no token, fails
-      _, post_res = mock_request CsrfApp, "/form", {
+      _, post_res = simulate_request CsrfApp, "/form", {
         post: { }
         expect: "json"
       }
@@ -432,7 +381,7 @@ describe "lapis.request", ->
         layout: "cool_layout"
         "/": => "hello", layout: false
 
-      status, res = mock_request LayoutApp, "/"
+      status, res = simulate_request LayoutApp, "/"
       assert.same "hello", res
 
     it "renders with layout by name", ->
@@ -447,7 +396,7 @@ describe "lapis.request", ->
         layout: "cool_layout"
         "/": => "hello", layout: "another_layout"
 
-      status, res = mock_request LayoutApp, "/"
+      status, res = simulate_request LayoutApp, "/"
       assert.same "*hello^", res
 
     it "renders layout with class", ->
@@ -464,7 +413,7 @@ describe "lapis.request", ->
         "/": =>
           "hello", layout: Layout
 
-      status, res = mock_request LayoutApp, "/"
+      status, res = simulate_request LayoutApp, "/"
       assert.same "(hello)", res
 
     it "renders with widget and layout class", ->
@@ -489,7 +438,7 @@ describe "lapis.request", ->
         "/": =>
           render: Inside, layout: Layout
 
-      status, res = mock_request LayoutApp, "/"
+      status, res = simulate_request LayoutApp, "/"
       assert.same "<body><div>The inside!</div></body>", res
 
       assert layout_args.view_widget, "Expected layout args to receive viewg_widget"
@@ -514,7 +463,7 @@ describe "before filter", ->
     class BasicBeforeFilter extends lapis.Application
       @before_filter => @hello = "world"
 
-    val = mock_action BasicBeforeFilter, =>
+    val = simulate_action BasicBeforeFilter, =>
       @hello
 
     assert.same "world", val

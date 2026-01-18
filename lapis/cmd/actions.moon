@@ -54,7 +54,7 @@ COMMANDS = {
           \flag "--cqueues", "Generate config for cqueues server"
         )
         \mutex(
-          \flag "--lua", "Generate app template file in Lua (defaul)"
+          \flag "--lua", "Generate app template file in Lua (default)"
           \flag "--moonscript --moon", "Generate app template file in MoonScript"
         )
         \flag "--etlua-config", "Use etlua for templated configuration files (eg. nginx.conf)"
@@ -330,7 +330,7 @@ COMMANDS = {
       app_module = args.app_class or config.app_class or "app"
       app_cls = require app_module or config.app_class
 
-      import mock_request from require "lapis.spec.request"
+      import simulate_request from require "lapis.spec.request"
 
       local input_headers, input_cookies
 
@@ -372,7 +372,7 @@ COMMANDS = {
         scheme: args.scheme
       }
 
-      status, response, headers = assert mock_request app_cls, args.path, request_options
+      status, response, headers = assert simulate_request app_cls, args.path, request_options
 
       if args.print_json
         import to_json from require "lapis.util"
@@ -458,6 +458,11 @@ COMMANDS = {
     help: "Widget asset compilation and build generation"
   }
 
+  custom_action {
+    name: "mcp"
+    help: "Lapis MCP server runtime"
+  }
+
   {
     name: "debug"
     hidden: true
@@ -523,6 +528,8 @@ class CommandRunner
 
     parser\option("--environment", "Override the environment name")\argname("<name>")
     parser\option("--config-module", "Override module name to require configuration from (default: config)")\argname("<name>")
+    parser\option "--dir", "Set the working directory for lapis command (requires luafilesystem)"
+
     parser\flag "--trace", "Show full error trace if lapis command fails"
 
     for command_spec in *COMMANDS
@@ -610,6 +617,10 @@ class CommandRunner
     action = @get_command args.command
 
     assert action, "Failed to find command: #{args.command}"
+
+    if args.dir
+      lfs = require "lfs"
+      lfs.chdir args.dir
 
     -- override the default config module if specified
     if args.config_module

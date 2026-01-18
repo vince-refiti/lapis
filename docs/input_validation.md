@@ -124,7 +124,7 @@ to `types.shape` from Tableshape with a few key differences:
 * Fields to verify are specified in an array of tuples, values are checked in the order they provided.
 * Any excess fields that are not explicitly specified within `param_spec` do not generate an error, and are left out of the transformed result.
 * The error returned by the type checker is not a single string value, but instead an array of errors that is compatible with the $self_ref{"errors"} pattern seen in Lapis actions.
-* The formatting of error messages can be customized.
+* The formatting of error mesages can be customized.
 * A new object is always returned from transform, even if the input matches the output
 
 `types.params_shape` is designed to be used with the transform API of
@@ -191,7 +191,7 @@ $options_table{
   },
   {
     name = "label",
-    description = "A prefix to be used in place of the field name when generating an error message"
+    description = "A prefix to be used in place of the field name when generating an error message. If `false` is provided, then the error will not be prefixed by the field name."
   },
   {
     name = "as",
@@ -199,15 +199,88 @@ $options_table{
   }
 }
 
+
+#### `types.params_array(t, [opts])`
+
+Creates a type checker that extracts array components from a table. Every item
+in the array must match type `t`, otherwise the checker will fail. Any other
+items in the table, not part of the array component, are ignored and not
+included in the final result. A new table is always returned in the transformed
+output, even if no changes have been made to any of the values. Similar to
+`params_shape`, errors are accumulated into an array object.
+
+The `opts` argument is a table of options that control how the type checker
+processes the input:
+
+$options_table{
+  {
+    name = "length",
+    description = "A type checker, typically `types.range`, that is used to verify the length of the array before checking individual items. The length is computed with the `#` operator. If length check fails then no other checks are done, and a single failure message is returned"
+  },
+  {
+    name = "item_prefix",
+    description = "A string that is prefixed before each collected error to identify the kind of object being checked",
+    default = [["item"]]
+  },
+  {
+    name = "iter",
+    description = "Function used as an iterator to visit each item in the table",
+    default = "ipairs"
+  },
+  {
+    name = "join_error",
+    description = "A function that formats the error message. It takes the error, the index of the item, and the item itself as arguments and returns a formatted string"
+  }
+}
+
+#### `types.params_map(key_t, value_t, [opts])`
+
+Creates a type checker that extracts key-value pairs from a table. Every key
+must match type `key_t` and every value must match type `value_t`, otherwise
+the checker will fail. If either `key_t` or `value_t` transform to `nil`, the
+corresponding key-value pair is stripped from the final output. A new table is
+always returned in the transformed output, even if no changes have been made to
+any of the key or values.
+
+Similar to `params_shape`, every pair is tested and all errors are accumulated
+into an array object. `key_t` is tested before `value_t`, if the `key_t` type
+fails then the `value_t` will not be tested, and only a single failure message
+for the key is generated.
+
+The `opts` argument is a table of options that control how the type checker
+processes the input:
+
+$options_table{
+  {
+    name = "join_error",
+    description = "A function that takes an error message, a key, a value, and an error type, and returns a string. This is used to construct the error message when a key-value pair fails to match the expected types"
+  },
+  {
+    name = "item_prefix",
+    description = "A string that is prefixed before each collected error to identify the kind of object being checked",
+    default = [["item"]]
+  },
+  {
+    name = "iter",
+    description = "Function used as iterator to visit each item in the table. This can be used to control the order in which items are visited",
+    default = "pairs"
+  }
+}
+
+> The `types.params_map.ordered_pairs` can be used for the `iter` option to
+> ensure the key-value pairs are visited in a sorted order. This can be useful
+> in cases where the order of error message output matters, such as in a test
+> suite.
+
 #### `types.assert_error(t)`
 
-Wraps a Tableshape type checker to yield an error when checking/transforming
-fails. The yielded error is compatible with Lapis error handling (eg.
-`assert_error` & `capture_errors`).
+Wraps a Tableshape type checker, `t`, to yield an error when the checking or
+transforming process fails. The error yielded is compatible with Lapis error
+handling, such as `assert_error` and `capture_errors`.
 
-This can be used to simplify code paths, as it is no longer necessary to check
-for the error case when validating an input since the error will be passed up
-the stack to the enclosing `capture_errors`.
+This can be utilized to simplify code paths, as it eliminates the need to check
+for an error case when validating an input. The error will be automatically
+passed up the stack to the enclosing `capture_errors`.
 
 $dual_code{
 moon = [[
@@ -220,6 +293,20 @@ empy_val = assert_empty\transform some_value
 
 print "We are guaranteed to have an empty value"
 ]]}
+
+
+#### `types.flatten_errors(t)`
+
+Converts errors that might be contained in an array table into a single string
+error message.
+
+The constructors `params_shape` and `params_array` accumulate errors into an
+array table to enhance error reporting for end-users. However, this error
+format is not compatible with standard tableshape error handling, as it expects
+a single string. This ensures that any error messages generated by the
+contained type, `t`, are single strings.
+
+If an array of errors is encountered, they are joined by `", "`.
 
 
 ### Builtin types
@@ -271,7 +358,7 @@ if types.empty some_value
 #### `types.valid_text`
 
 Matches a string that is valid UTF8. Invalid characters sequences or
-unprintable characters will cause validation to valid.
+unprintable characters will cause validation to fail.
 
 $dual_code{
 moon = [[

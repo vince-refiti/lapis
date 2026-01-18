@@ -101,29 +101,31 @@ By default all models expect the table to have a primary key called`"id"`. This
 can be changed by setting the $self_ref{"primary_key"} field on the class.
 
 
-```lua
+$dual_code{
+lua = [[
 local Users = Model:extend("users", {
   primary_key = "login"
 })
-```
-
-```moon
+]],
+moon = [[
 class Users extends Model
   @primary_key: "login"
-```
+]]
+}
 
 If there are multiple primary keys then an array table can be used:
 
-```lua
+$dual_code{
+lua = [[
 local Followings = Model:extend("followings", {
   primary_key = { "user_id", "followed_user_id" }
 })
-```
-
-```moon
+]],
+moon = [[
 class Followings extends Model
   @primary_key: { "user_id", "followed_user_id" }
-```
+]]
+}
 
 A unique primary key is needed for every row in order to `update` and `delete`
 rows without affecting other rows unintentially.
@@ -135,7 +137,8 @@ fetching data about the underlying table.
 
 For the following examples assume we have the following models:
 
-```lua
+$dual_code{
+lua = [[
 local Model = require("lapis.db.model").Model
 
 local Users = Model:extend("users")
@@ -143,16 +146,16 @@ local Users = Model:extend("users")
 local Tags = Model:extend("tags", {
   primary_key = {"user_id", "tag"}
 })
-```
-
-```moon
+]],
+moon = [[
 import Model from require "lapis.db.model"
 
 class Users extends Model
 
 class Tags extends Model
   @primary_key: {"user_id", "tag"}
-```
+]]
+}
 
 ### `Model:find(...)`
 
@@ -308,7 +311,8 @@ $options_table{
 
 For example:
 
-```lua
+$dual_code{
+lua = [[
 local users = UserProfile:find_all({1,2,3,4}, {
   key = "user_id",
   fields = "user_id, twitter_account",
@@ -316,9 +320,8 @@ local users = UserProfile:find_all({1,2,3,4}, {
     public = true
   }
 })
-```
-
-```moon
+]],
+moon = [[
 users = UserProfile\find_all {1,2,3,4}, {
   key: "user_id"
   fields: "user_id, twitter_account"
@@ -326,7 +329,8 @@ users = UserProfile\find_all {1,2,3,4}, {
     public: true
   }
 }
-```
+]]
+}
 
 ```sql
 SELECT user_id, twitter_account from "things" where "user_id" in (1, 2, 3, 4) and "public" = TRUE
@@ -366,19 +370,20 @@ an auto-incrementing key from the insert statement.
 > In MySQL the *last insert id* is used to get the id of the row since the
 > `RETURNING` statement is not available.
 
-```lua
+$dual_code{
+lua = [[
 local user = Users:create({
   login = "superuser",
   password = "1234"
 })
-```
-
-```moon
+]],
+moon = [[
 user = Users\create {
   login: "superuser"
   password: "1234"
 }
-```
+]]
+}
 
 ```sql
 INSERT INTO "users" ("password", "login") VALUES ('1234', 'superuser') RETURNING "id"
@@ -393,17 +398,18 @@ For example, we might create a new row in a table with a `position` column set
 to the next highest number:
 
 
-```lua
+$dual_code{
+lua = [[
 local user = Users:create({
   position = db.raw("(select coalesce(max(position) + 1, 0) from users)")
 })
-```
-
-```moon
+]],
+moon = [[
 user = Users\create {
   position: db.raw "(select coalesce(max(position) + 1, 0) from users)"
 }
-```
+]]
+}
 
 ```sql
 INSERT INTO "users" (position)
@@ -483,38 +489,42 @@ The output might look like this:
 
 Returns the name of the table backed by the model.
 
-```lua
+$dual_code{
+lua = [[
 Model:extend("users"):table_name() --> "users"
 Model:extend("user_posts"):table_name() --> "user_posts"
-```
-
-```moon
+]],
+moon = [[
 (class Users extends Model)\table_name! --> "users"
 (class UserPosts extends Model)\table_name! --> "user_posts"
-```
+]]
+}
 
-<p class="for_moon">
+<div class="for_moon">
+
 This class method can be overridden to change what table a model uses:
-</p>
 
 ```moon
 class Users extends Model
   @table_name: => "active_users"
 ```
 
+</div>
+
 ### `Model:singular_name()`
 
 Returns the singular name of the table.
 
-```lua
+$dual_code{
+lua = [[
 Model:extend("users"):singular_name() --> "user"
 Model:extend("user_posts"):singular_name() --> "user_post"
-```
-
-```moon
+]],
+moon = [[
 (class Users extends Model)\singular_name! --> "user"
 (class UserPosts extends Model)\singular_name! --> "user_post"
-```
+]]
+}
 
 The singular name is used internally by Lapis when calculating what the name of
 the field is when loading rows with `include_in`. It's also used when
@@ -523,41 +533,40 @@ relation.
 
 ### `Model:include_in(objects, key, opts={})`
 
-Bulk load rows of the model into an array of objects (often the array of
+Bulk load rows of the model into an array of objects (often this array of
 objects is an array of instances of another model). This is used to preload
-associations in a single query in order to avoid the [n+1 queries
+associations in a single query to avoid the [n+1 queries
 problem](https://leafo.net/guides/postgresql-preloading.html).
 
-It works my mutating the objects in the array by inserting a new field into
-each item where the query returned a result. The name of this new field is
-either derived from the model's table name, or manually specified via an
-option.
+It works by mutating the objects in the array, inserting a new field into each
+item where the query returned a result. The name of this new field is either
+derived from the model's table name, or manually specified via an option.
 
 Returns the `objects` array table.
 
-> It's possible for `include_in` to assign the same reference to different
-> items in `objects.` The query will fetch only unique rows that meet the
-> requirement. As an example, if you are preloading the `author` for many
+> `include_in` can assign the same reference to different
+> items in `objects`. The query will fetch only unique rows that meet the
+> requirement. For instance, if you are preloading the `author` for numerous
 > `posts`, and they all share the same `author_id`, then only one `author` will
 > be fetched, and the same reference will be assigned to every `post`.
 
-This is a lower level interface for preloading data on models. In general we
-recommend [using relations](#relations) if possible. A relation
-will internally generate a call to `include_in` based on how you have
-configured the relation.
+This is a lower-level interface for preloading data on models. Generally, it's
+recommended to [use relations](#relations) if possible. A relation will
+internally generate a call to `include_in` based on how you have configured the
+relation.
 
 The `key` argument controls the mapping from the fields in each object of the
 objects array to the column name used in the query. It can be a string, an
 array of strings, or a string*(column)* → string*(field)* table mapping. When
-using a string or array of strings then the corresponding associated key is
-automatically chosen.
+using a string or an array of strings, the corresponding associated key is
+automatically selected.
 
 Possible values for `key` argument:
 
-* **string** -- for each object, the value `object[key]` is used to lookup instances of the model by the model's primary key. The model is assumed to have a singular primary key, and will error otherwise
-  * with `flip` enabled: `key` is used as the foreign key column name, and `object[opts.local_key or "id"]` is used to pull the values
-* **array of string** -- for each object, a composite key is created by individually mapping each field of the key array via `object[key]` to the composite primary key of the model
-* **column mapping table** -- explicitly specify the mapping of fields to columns. The *key* of the table will be used as the column name, and the value in the table will be used as the field name referenced from the `objects` argument
+* **String** -- For each object, the value `object[key]` is used to look up instances of the model by the model's primary key. It's assumed that the model has a singular primary key; otherwise, an error will occur.
+  * With `flip` enabled: `key` is used as the foreign key column name, and `object[opts.local_key or "id"]` is used to retrieve the values.
+* **Array of Strings** -- For each object, a composite key is created by mapping each field of the key array individually via `object[key]` to the composite primary key of the model.
+* **Column Mapping Table** -- This allows for the explicit specification of the mapping of fields to columns. The *key* of the table is used as the column name, while the value in the table is used as the field name referenced from the `objects` argument. If the value is a function, this function will be called for each object to dynamically calculate the foreign key value.
 
 `include_in` supports the following options (via the optional `opts` argument):
 
@@ -692,20 +701,21 @@ foreign key on the array of model instances that points to the rows we are
 preloading. By default, the value of the foreign key is mapped to the primary
 key of the model that is being loaded.
 
-```lua
+$dual_code{
+lua = [[
 local posts = Posts:select() -- this gets all the posts
 Users:include_in(posts, "user_id")
 
 print(posts[1].user.name) -- print the fetched data
-```
-
-```moon
+]],
+moon = [[
 posts = Posts\select! -- this gets all the posts
 
 Users\include_in posts, "user_id"
 
 print posts[1].user.name -- print the fetched data
-```
+]]
+}
 
 ```sql
 SELECT * from "posts"
@@ -727,7 +737,8 @@ In this next example a column mapping table is used to explicitly specify what
 fields in our object array match to the columns in our query. Here are the
 relevant models:
 
-```lua
+$dual_code{
+lua = [[
 local Model = require("lapis.db.model").Model
 
 -- table with columns: id, name
@@ -735,10 +746,8 @@ local Users = Model:extend("users")
 
 -- table with columns: user_id, twitter_account, facebook_username
 local UserData = Model:extend("user_data")
-
-```
-
-```moon
+]],
+moon = [[
 import Model from require "lapis.db.model"
 
 -- columns: id, name
@@ -746,7 +755,8 @@ class Users extends Model
 
 -- columns: user_id, twitter_account, facebook_username
 class UserData extends Model
-```
+]]
+}
 
 Now let's say we have an array of users and we want to fetch the associated
 user data.
@@ -766,6 +776,40 @@ The second argument of `include_in`, called `key`, is a table with the value `{
 "user_id" = "id"}`. This instructs `include_in` to take all the values stored
 in the `id` field from the users array to use as values to look up rows in
 `user_data` table by the `user_id` column.
+
+The table value can also be a function. That function receives the current
+object and should return the foreign-key value that will be placed into the
+`IN` clause. This is known as a *computed foreign key*. The return value must
+be a simple databse value (number, string, `db.NULL`) or nil to ignore loading
+anything for that model
+
+$dual_code{[[
+some_books = Books\select!
+
+-- Will query "authors" table where author_id in (all returned values)
+Authors\include_in some_books, {
+  author_id: (book) ->
+    return false unless book.metadata
+    book.metadata.author_id
+}
+]]}
+
+A *computed foreign key* can also return a
+[`db.list`](database.html#dblistvalues) type to match multiple rows from the
+related table. Keep in mind that unless `many = true` is used, only the first
+row will be assigned to the model instance.
+
+In this example, only the `TagDescriptions` for distinct `tag_name` values are
+efficienctly fetched and assigned to the respective `pages`.
+
+$dual_code{[[
+TagDescriptions\include_in pages, {
+  tag_name: (page) ->
+    db.list page\get_tags!
+}, {
+    many: true
+}
+]]}
 
 The field name that is used to store each result in the users array is derived
 from the name of the included table. In this case, `UserData` →  `user_data`.
@@ -835,9 +879,10 @@ built in methods to avoid unexpected issues.
 
 ### `model:update(..., opts={})`
 
-Generate and issue a query to update the row backed by the instance of the
-model. The values of the primary keys specified by the model's class are used
-to uniquely identify the row for updating.
+Issue a query to update the row backed by the instance of the model. The values
+of the primary keys, as specified by the model's class, are used to uniquely
+identify the row for updating. The `updated_at` timestamp field will also be
+set if the model has timestamps enabled.
 
 This method returns two values:
 
@@ -850,7 +895,6 @@ the database before the update was issued, or a conditional update is being used
 > incompatible with `assert` when trying to throw an error if the update didn't
 > take place
 
-
 The arguments to this method come in two forms:
 
 1. Update table
@@ -858,7 +902,7 @@ The arguments to this method come in two forms:
 
 In the first form we simply pass a table mapping column names to the updated
 values. The values in the table will be merged into the instance of the model
-to reflect the update:
+to reflect the update if the update is able to complete successfully.
 
 $dual_code{[[
 user = Users\find 1
@@ -874,7 +918,6 @@ assert user.login == "uberuser"
 ```sql
 UPDATE "users" SET "login" = 'uberuser', "email" = 'admin@example.com' WHERE "id" = 1
 ```
-
 
 The second form takes a list of field or column names to synchronize from the
 model instance to the database. With this approach first edit the model
@@ -922,12 +965,17 @@ $options_table{
   {
     name = "timestamp",
     default = "`true`",
-    description = "The `updated_at` field will be updated to the current time if the model has timestamps. Note that if the update itself contains `updated_at` then that will take precedence over the auto-update.",
+    description = "The `updated_at` field will be updated to the current time if the model has timestamps enabled. Note that if the update itself contains `updated_at` then that will take precedence over the auto-update.",
     example = dual_code{[[
       user\update {
         views_count: db.raw "views_count + 1"
       }, timestamp: false
     ]]}
+  },
+  {
+    name = "returning",
+    default = "`nil`",
+    description = [[Manually specify a list of columns to be returned from the query when issuing the update. These values will be assigned to the model instance object if the query completes successfully. Note that any updated fields that use `db.raw` will automatically use `returning` and it is not necessary to manually specify. A special value of `"*"` can be provided to cause every field to be returned with the update.]]
   },
   {
     name = "where",
@@ -1595,6 +1643,59 @@ SELECT * from "some_model" where
   order by "some_model"."user_id" ASC, "some_model"."post_id" ASC limit 10
 ```
 
+### `each_page(...)`
+
+Returns an iterator function that can be used to iterate through each page of
+results. Optional arguments can be provided to specify the starting point for
+iteration, using the same cursor values that would be passed to `get_page`.
+
+$dual_code{
+moon = [[
+import OrderedPaginator from require "lapis.db.pagination"
+pager = OrderedPaginator Events, "id", "where user_id = ?", 123
+
+-- iterate through all pages from the beginning
+for page_results in pager\each_page!
+  process page_results
+
+-- iterate starting from id > 500
+for page_results in pager\each_page 500
+  process page_results
+]],
+lua = [[
+local OrderedPaginator = require("lapis.db.pagination").OrderedPaginator
+local pager = OrderedPaginator(Events, "id", "where user_id = ?", 123)
+
+-- iterate through all pages from the beginning
+for page_results in pager:each_page() do
+  process(page_results)
+end
+
+-- iterate starting from id > 500
+for page_results in pager:each_page(500) do
+  process(page_results)
+end
+]]}
+
+For composite ordering with multiple columns, pass multiple arguments:
+
+$dual_code{
+moon = [[
+pager = OrderedPaginator SomeModel, {"user_id", "post_id"}
+
+-- start from (user_id, post_id) > (100, 200)
+for page_results in pager\each_page 100, 200
+  process page_results
+]],
+lua = [[
+local pager = OrderedPaginator(SomeModel, {"user_id", "post_id"})
+
+-- start from (user_id, post_id) > (100, 200)
+for page_results in pager:each_page(100, 200) do
+  process(page_results)
+end
+]]}
+
 ## Relations
 
 Often your models are connected to other models by use of a *foreign_key*. You
@@ -2098,7 +2199,7 @@ import Model from require "lapis.db.model"
 
 class Posts extends Model
   @relations: {
-    {"user", polymorphic_belongs_to: {
+    {"object", polymorphic_belongs_to: {
       [1]: "VideoGames"
       [2]: "Books"
     }}
@@ -2359,4 +2460,3 @@ Posts.statuses\to_name 232 -- error
 Posts.statuses\for_db "hello" -- error
 
 ```
-

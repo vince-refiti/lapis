@@ -107,18 +107,23 @@ preload_homogeneous = (sub_relations, model, objects, preload_spec, ...) ->
             -- Ignore the val_types that we know can not contain nested relations
             unless val_type == "boolean" or val_type == "function"
               sub_relations or= {}
-              sub_relations[val] or= {}
-              loaded_objects = sub_relations[val]
+              loaded_objects = sub_relations[val] or {}
 
               -- grab all the loaded objects to process
               if r.has_many or r.fetch and r.many
                 for obj in *objects
                   continue unless obj[relation_name] -- if the preloader didn't insert array then just skip
                   for fetched in *obj[relation_name]
+                    continue unless type(fetched) == "table"
                     table.insert loaded_objects, fetched
               else
                 for obj in *objects
-                  table.insert loaded_objects, obj[relation_name]
+                  fetched = obj[relation_name]
+                  continue unless type(fetched) == "table"
+                  table.insert loaded_objects, fetched
+
+              if next(loaded_objects) and not sub_relations[val]
+                sub_relations[val] = loaded_objects
 
     when "string"
       -- preload_spec is simply the name of the relation to preload
@@ -238,7 +243,7 @@ belongs_to = (name, opts) =>
   column_name = opts.key or "#{name}_id"
 
   assert type(column_name) == "string",
-    "`belongs_to` relation doesn't support composite key, use `has_one` instead"
+    "`belongs_to` relation doesn't support composite key or computed key, use `has_one` instead"
 
   @__base[get_method] = =>
     return nil unless @[column_name]
@@ -297,7 +302,10 @@ has_one = (name, opts) =>
         else
           k,v
 
-        out[key] = @[local_key] or @@db.NULL
+        out[key] = if type(local_key) == "function"
+          assert local_key @
+        else
+          @[local_key] or @@db.NULL
 
       out
     else
@@ -367,7 +375,10 @@ has_many = (name, opts) =>
         else
           k, v
 
-        out[key] = @[local_key] or @@db.NULL
+        out[key] = if type(local_key) == "function"
+          assert local_key @
+        else
+          @[local_key] or @@db.NULL
 
       out
     else
@@ -394,7 +405,10 @@ has_many = (name, opts) =>
         table.insert additional_clause, where
       else
         for k,v in pairs where
-          additional_clause[k] = v
+          if type(k) == "number" -- append array clauses
+            table.insert additional_clause, v
+          else
+            additional_clause[k] = v
 
     if more_where = calling_opts and calling_opts.where
       additional_clause = { @@db.clause clause } unless additional_clause
@@ -403,7 +417,10 @@ has_many = (name, opts) =>
         table.insert additional_clause, more_where
       else
         for k,v in pairs more_where
-          additional_clause[k] = v
+          if type(k) == "number" -- append array clauses
+            table.insert additional_clause, v
+          else
+            additional_clause[k] = v
 
     if additional_clause and next additional_clause
       clause = @@db.clause additional_clause
@@ -500,11 +517,18 @@ polymorphic_belongs_to = (name, opts) =>
     for {type_name, model_name} in *types
       model = assert_model @@, model_name
       filtered = [o for o in *objs when o[type_col] == @@[enum_name][type_name]]
-      model\include_in filtered, id_col, {
+      include_opts = {
         for_relation: name
         as: name
         fields: fields and fields[type_name]
       }
+
+      if preload_opts
+        for k, v in pairs preload_opts
+          continue if k == "fields"
+          include_opts[k] = v
+
+      model\include_in filtered, id_col, include_opts
 
     objs
 

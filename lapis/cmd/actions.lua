@@ -62,7 +62,7 @@ local COMMANDS = {
       do
         local _with_0 = command
         _with_0:mutex(_with_0:flag("--nginx", "Generate config for nginx server (default)"), _with_0:flag("--cqueues", "Generate config for cqueues server"))
-        _with_0:mutex(_with_0:flag("--lua", "Generate app template file in Lua (defaul)"), _with_0:flag("--moonscript --moon", "Generate app template file in MoonScript"))
+        _with_0:mutex(_with_0:flag("--lua", "Generate app template file in Lua (default)"), _with_0:flag("--moonscript --moon", "Generate app template file in MoonScript"))
         _with_0:flag("--etlua-config", "Use etlua for templated configuration files (eg. nginx.conf)")
         _with_0:flag("--git", "Generate default .gitignore file")
         _with_0:flag("--tup", "Generate default Tupfile")
@@ -373,8 +373,8 @@ local COMMANDS = {
       local config = require("lapis.config").get()
       local app_module = args.app_class or config.app_class or "app"
       local app_cls = require(app_module or config.app_class)
-      local mock_request
-      mock_request = require("lapis.spec.request").mock_request
+      local simulate_request
+      simulate_request = require("lapis.spec.request").simulate_request
       local input_headers, input_cookies
       if args.json then
         input_headers = input_headers or { }
@@ -432,7 +432,7 @@ local COMMANDS = {
         cookies = input_cookies,
         scheme = args.scheme
       }
-      local status, response, headers = assert(mock_request(app_cls, args.path, request_options))
+      local status, response, headers = assert(simulate_request(app_cls, args.path, request_options))
       if args.print_json then
         local to_json
         to_json = require("lapis.util").to_json
@@ -543,6 +543,10 @@ local COMMANDS = {
     name = "eswidget",
     help = "Widget asset compilation and build generation"
   }),
+  custom_action({
+    name = "mcp",
+    help = "Lapis MCP server runtime"
+  }),
   {
     name = "debug",
     hidden = true,
@@ -616,6 +620,7 @@ do
       parser:add_help_command()
       parser:option("--environment", "Override the environment name"):argname("<name>")
       parser:option("--config-module", "Override module name to require configuration from (default: config)"):argname("<name>")
+      parser:option("--dir", "Set the working directory for lapis command (requires luafilesystem)")
       parser:flag("--trace", "Show full error trace if lapis command fails")
       for _index_0 = 1, #COMMANDS do
         local _continue_0 = false
@@ -726,6 +731,10 @@ do
       args = self:parse_args(args)
       local action = self:get_command(args.command)
       assert(action, "Failed to find command: " .. tostring(args.command))
+      if args.dir then
+        local lfs = require("lfs")
+        lfs.chdir(args.dir)
+      end
       if args.config_module then
         package.loaded["lapis.config_module_name"] = args.config_module
       end

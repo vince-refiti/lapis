@@ -106,9 +106,7 @@ preload_homogeneous = function(sub_relations, model, objects, preload_spec, ...)
           preload_relation(model, objects, relation_name, preload_opts)
           if not (val_type == "boolean" or val_type == "function") then
             sub_relations = sub_relations or { }
-            local _update_0 = val
-            sub_relations[_update_0] = sub_relations[_update_0] or { }
-            local loaded_objects = sub_relations[val]
+            local loaded_objects = sub_relations[val] or { }
             if r.has_many or r.fetch and r.many then
               for _index_0 = 1, #objects do
                 local _continue_1 = false
@@ -120,8 +118,19 @@ preload_homogeneous = function(sub_relations, model, objects, preload_spec, ...)
                   end
                   local _list_0 = obj[relation_name]
                   for _index_1 = 1, #_list_0 do
-                    local fetched = _list_0[_index_1]
-                    table.insert(loaded_objects, fetched)
+                    local _continue_2 = false
+                    repeat
+                      local fetched = _list_0[_index_1]
+                      if not (type(fetched) == "table") then
+                        _continue_2 = true
+                        break
+                      end
+                      table.insert(loaded_objects, fetched)
+                      _continue_2 = true
+                    until true
+                    if not _continue_2 then
+                      break
+                    end
                   end
                   _continue_1 = true
                 until true
@@ -131,9 +140,24 @@ preload_homogeneous = function(sub_relations, model, objects, preload_spec, ...)
               end
             else
               for _index_0 = 1, #objects do
-                local obj = objects[_index_0]
-                table.insert(loaded_objects, obj[relation_name])
+                local _continue_1 = false
+                repeat
+                  local obj = objects[_index_0]
+                  local fetched = obj[relation_name]
+                  if not (type(fetched) == "table") then
+                    _continue_1 = true
+                    break
+                  end
+                  table.insert(loaded_objects, fetched)
+                  _continue_1 = true
+                until true
+                if not _continue_1 then
+                  break
+                end
               end
+            end
+            if next(loaded_objects) and not sub_relations[val] then
+              sub_relations[val] = loaded_objects
             end
           end
         end
@@ -328,7 +352,7 @@ belongs_to = function(self, name, opts)
   assert(type(source) == "string", "Expecting model name for `belongs_to` relation")
   local get_method = opts.as or "get_" .. tostring(name)
   local column_name = opts.key or tostring(name) .. "_id"
-  assert(type(column_name) == "string", "`belongs_to` relation doesn't support composite key, use `has_one` instead")
+  assert(type(column_name) == "string", "`belongs_to` relation doesn't support composite key or computed key, use `has_one` instead")
   self.__base[get_method] = function(self)
     if not (self[column_name]) then
       return nil
@@ -396,7 +420,11 @@ has_one = function(self, name, opts)
         else
           key, local_key = k, v
         end
-        out[key] = self[local_key] or self.__class.db.NULL
+        if type(local_key) == "function" then
+          out[key] = assert(local_key(self))
+        else
+          out[key] = self[local_key] or self.__class.db.NULL
+        end
       end
       clause = out
     else
@@ -476,7 +504,11 @@ has_many = function(self, name, opts)
         else
           key, local_key = k, v
         end
-        out[key] = self[local_key] or self.__class.db.NULL
+        if type(local_key) == "function" then
+          out[key] = assert(local_key(self))
+        else
+          out[key] = self[local_key] or self.__class.db.NULL
+        end
       end
       join_clause = out
     else
@@ -501,7 +533,11 @@ has_many = function(self, name, opts)
           table.insert(additional_clause, where)
         else
           for k, v in pairs(where) do
-            additional_clause[k] = v
+            if type(k) == "number" then
+              table.insert(additional_clause, v)
+            else
+              additional_clause[k] = v
+            end
           end
         end
       end
@@ -518,7 +554,11 @@ has_many = function(self, name, opts)
           table.insert(additional_clause, more_where)
         else
           for k, v in pairs(more_where) do
-            additional_clause[k] = v
+            if type(k) == "number" then
+              table.insert(additional_clause, v)
+            else
+              additional_clause[k] = v
+            end
           end
         end
       end
@@ -638,11 +678,28 @@ polymorphic_belongs_to = function(self, name, opts)
         end
         filtered = _accum_0
       end
-      model:include_in(filtered, id_col, {
+      local include_opts = {
         for_relation = name,
         as = name,
         fields = fields and fields[type_name]
-      })
+      }
+      if preload_opts then
+        for k, v in pairs(preload_opts) do
+          local _continue_0 = false
+          repeat
+            if k == "fields" then
+              _continue_0 = true
+              break
+            end
+            include_opts[k] = v
+            _continue_0 = true
+          until true
+          if not _continue_0 then
+            break
+          end
+        end
+      end
+      model:include_in(filtered, id_col, include_opts)
     end
     return objs
   end

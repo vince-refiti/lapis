@@ -40,11 +40,18 @@ _put = (t, value, front, ...) ->
     _put obj, value, ...
 
 -- _fields obj, {"a", "b", "c"} --> obj.a, obj.b, obj.c
+-- NOTE: names value can also be a function to apply to the object
 _fields = (t, names, k=1, len=#names) ->
-  if k == len
-    t[names[k]]
+  n = names[k]
+  v = if type(n) == "function"
+    n t
   else
-    t[names[k]], _fields(t, names, k + 1, len)
+    t[n]
+
+  if k == len
+    v
+  else
+    v, _fields(t, names, k + 1, len)
 
 filter_duplicate_lists = (db, lists) ->
   seen = {}
@@ -55,6 +62,28 @@ filter_duplicate_lists = (db, lists) ->
     list
 
   out
+
+_memoize1 = (fn) ->
+  NIL = {}
+  cache = setmetatable {}, __mode: "k"
+
+  (arg, more) =>
+    error "memoize1 function received second argument" if more
+    key = if arg == nil then NIL else arg
+
+    cache_value = cache[@] and cache[@][key]
+
+    if cache_value
+      return unpack cache_value
+
+    res = { fn @, arg }
+
+    unless cache[@]
+      cache[@] = setmetatable {}, __mode: "k"
+
+    cache[@][key] = res
+
+    unpack res
 
 class Enum
   debug = =>
@@ -225,6 +254,7 @@ class BaseModel
   --
   -- -- Have users, get games (be careful of many to one, only one will be
   -- -- assigned but all will be fetched)
+  -- NOTE: flip is deprecated
   -- users = Users\select!
   -- Games\include_in users, "user_id", flip: true
   --
@@ -294,11 +324,24 @@ class BaseModel
         dest_key = dest_key[1]
         false
       else
+        -- memoize all computed source keys
+        source_key = for k in *source_key
+          if type(k) == "function"
+            _memoize1 k
+          else
+            k
         true
     else
       false
 
-    include_ids = for record in *other_records
+    computed_source_key = if type(source_key) == "function"
+      source_key = _memoize1 source_key
+      true
+
+    include_ids = {} -- field value to match on model
+    -- NOTE: when dealing with composite keys, db.list() tuples are put in this array
+
+    for record in *other_records
       if skip_included
         if for_relation
           continue if relation_is_loaded record, for_relation
@@ -306,12 +349,27 @@ class BaseModel
           continue if record[field_name] != nil
 
       if composite_foreign_key
-        tuple = [record[k] or @db.NULL for k in *source_key]
+        tuple = for k in *source_key
+          if type(k) == "function"
+            k(record) or @db.NULL
+          else
+            record[k] or @db.NULL
+
         continue if _all_same tuple, @db.NULL
-        @db.list tuple
+        table.insert include_ids, @db.list tuple
       else
-        with id = record[source_key]
-          continue unless id
+        id = if computed_source_key
+          source_key record
+        else
+          record[source_key]
+        continue unless id
+
+        -- if the value is a list, then we want to select everything that matches
+        if @db.is_list id
+          for item in *id[1]
+            table.insert include_ids, item
+        else
+          table.insert include_ids, id
 
     if next include_ids
       if composite_foreign_key
@@ -410,7 +468,29 @@ class BaseModel
               other[field_name] = {}
         else
           for other in *other_records
-            other[field_name] = records[other[source_key]]
+            ref_value = if computed_source_key
+              source_key other
+            else
+              other[source_key]
+
+
+            if @db.is_list ref_value
+              -- NOTE: we iterate through the the whole query result to keep the ordering across multiple values
+              list_value_set = {k, true for k in *ref_value[1] when k != nil}
+              if many
+                matched_results = for row in *res
+                  continue unless list_value_set[row[dest_key]]
+                  row
+
+                other[field_name] = matched_results
+              else
+                -- take the first value found
+                for row in *res
+                  continue unless list_value_set[row[dest_key]]
+                  other[field_name] = row
+                  break
+            else
+              other[field_name] = records[ref_value]
 
             if many and not other[field_name]
               other[field_name] = {}
@@ -617,27 +697,32 @@ class BaseModel
   --   col3: "Hello"
   -- }
   -- NOTE: this implementation depends on support for RETURNING sql synax
+  -- TODO: update by field name should be deprecated
   update: (first, ...) =>
     cond = @_primary_cond!
 
-    columns = if type(first) == "table"
-      for k,v in pairs first
+    update_fields = {} -- the columns and their new values to update
+    local columns
+
+    if type(first) == "table"
+      columns = for k,v in pairs first
         if type(k) == "number"
+          update_fields[v] = @[v]
           v
         else
-          @[k] = v
+          update_fields[k] = v
           k
     else
-      {first, ...}
+      columns = {first, ...}
+      for c in *columns
+        update_fields[c] = @[c]
 
     return nil, "nothing to update" if next(columns) == nil
 
     if @@constraints
-      for _, column in pairs columns
-        if err = @@_check_constraint column, @[column], @
+      for column in *columns
+        if err = @@_check_constraint column, update_fields[column], @
           return nil, err
-
-    values = { col, @[col] for col in *columns }
 
     -- update options
     nargs = select "#", ...
@@ -647,7 +732,7 @@ class BaseModel
 
     if @@timestamp and not (opts and opts.timestamp == false)
       time = @@db.format_date!
-      values.updated_at or= time
+      update_fields.updated_at or= time
 
     if opts and opts.where
       assert type(opts.where) == "table", "Model.update: where condition must be a table or db.clause"
@@ -662,26 +747,51 @@ class BaseModel
         where
       }
 
-    local returning
-    for k, v in pairs values
-      if v == @@db.NULL
-        @[k] = nil
-      elseif @@db.is_raw(v)
+    local returning, return_all
+
+    if opts and opts.returning
+      if opts.returning == "*"
+        return_all = true
+        returning = {@@db.raw "*"}
+      else
+        returning = {unpack opts.returning}
+
+    for k, v in pairs update_fields
+      continue if v == @@db.NULL -- NULL is raw but handled specially
+      if @@db.is_raw v
         returning or= {}
         table.insert returning, k
 
-    local res
-
-    if returning
-      res = @@db.update @@table_name!, values, cond, unpack returning
-      if update = unpack res
-        for k in *returning
-          @[k] = update[k]
+    res = if returning
+      @@db.update @@table_name!, update_fields, cond, unpack returning
     else
-      res = @@db.update @@table_name!, values, cond
+      @@db.update @@table_name!, update_fields, cond
 
-    (res.affected_rows or 0) > 0, res
+    did_update = (res.affected_rows or 0) > 0
 
+    -- if the update completed, store the values into self
+    if did_update
+      -- NOTE: this is redundant if the column name variant is used to issue an update
+      for k, v in pairs update_fields
+        if v == @@db.NULL
+          @[k] = nil
+        else
+          @[k] = v
+
+      if returning
+        if result_row = unpack res
+          if return_all
+            for k, v in pairs result_row
+              @[k] = v
+
+          -- we still have to iterate over the name list to ensure that we nil
+          -- out explicitly requested fields, since db.NULL is not returned in
+          -- the result set
+          for k in *returning
+            continue unless type(k) == "string"
+            @[k] = result_row[k]
+
+    did_update, res
 
   -- reload fields on the instance
   refresh: (fields="*", ...) =>

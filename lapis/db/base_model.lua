@@ -70,10 +70,17 @@ _fields = function(t, names, k, len)
   if len == nil then
     len = #names
   end
-  if k == len then
-    return t[names[k]]
+  local n = names[k]
+  local v
+  if type(n) == "function" then
+    v = n(t)
   else
-    return t[names[k]], _fields(t, names, k + 1, len)
+    v = t[n]
+  end
+  if k == len then
+    return v
+  else
+    return v, _fields(t, names, k + 1, len)
   end
 end
 local filter_duplicate_lists
@@ -105,6 +112,38 @@ filter_duplicate_lists = function(db, lists)
     out = _accum_0
   end
   return out
+end
+local _memoize1
+_memoize1 = function(fn)
+  local NIL = { }
+  local cache = setmetatable({ }, {
+    __mode = "k"
+  })
+  return function(self, arg, more)
+    if more then
+      error("memoize1 function received second argument")
+    end
+    local key
+    if arg == nil then
+      key = NIL
+    else
+      key = arg
+    end
+    local cache_value = cache[self] and cache[self][key]
+    if cache_value then
+      return unpack(cache_value)
+    end
+    local res = {
+      fn(self, arg)
+    }
+    if not (cache[self]) then
+      cache[self] = setmetatable({ }, {
+        __mode = "k"
+      })
+    end
+    cache[self][key] = res
+    return unpack(res)
+  end
 end
 local Enum
 do
@@ -228,6 +267,7 @@ do
     end,
     update = function(self, first, ...)
       local cond = self:_primary_cond()
+      local update_fields = { }
       local columns
       if type(first) == "table" then
         do
@@ -235,9 +275,10 @@ do
           local _len_0 = 1
           for k, v in pairs(first) do
             if type(k) == "number" then
+              update_fields[v] = self[v]
               _accum_0[_len_0] = v
             else
-              self[k] = v
+              update_fields[k] = v
               _accum_0[_len_0] = k
             end
             _len_0 = _len_0 + 1
@@ -249,28 +290,24 @@ do
           first,
           ...
         }
+        for _index_0 = 1, #columns do
+          local c = columns[_index_0]
+          update_fields[c] = self[c]
+        end
       end
       if next(columns) == nil then
         return nil, "nothing to update"
       end
       if self.__class.constraints then
-        for _, column in pairs(columns) do
+        for _index_0 = 1, #columns do
+          local column = columns[_index_0]
           do
-            local err = self.__class:_check_constraint(column, self[column], self)
+            local err = self.__class:_check_constraint(column, update_fields[column], self)
             if err then
               return nil, err
             end
           end
         end
-      end
-      local values
-      do
-        local _tbl_0 = { }
-        for _index_0 = 1, #columns do
-          local col = columns[_index_0]
-          _tbl_0[col] = self[col]
-        end
-        values = _tbl_0
       end
       local nargs = select("#", ...)
       local last = nargs > 0 and select(nargs, ...)
@@ -280,7 +317,7 @@ do
       end
       if self.__class.timestamp and not (opts and opts.timestamp == false) then
         local time = self.__class.db.format_date()
-        values.updated_at = values.updated_at or time
+        update_fields.updated_at = update_fields.updated_at or time
       end
       if opts and opts.where then
         assert(type(opts.where) == "table", "Model.update: where condition must be a table or db.clause")
@@ -295,31 +332,80 @@ do
           where
         })
       end
-      local returning
-      for k, v in pairs(values) do
-        if v == self.__class.db.NULL then
-          self[k] = nil
-        elseif self.__class.db.is_raw(v) then
-          returning = returning or { }
-          table.insert(returning, k)
+      local returning, return_all
+      if opts and opts.returning then
+        if opts.returning == "*" then
+          return_all = true
+          returning = {
+            self.__class.db.raw("*")
+          }
+        else
+          returning = {
+            unpack(opts.returning)
+          }
+        end
+      end
+      for k, v in pairs(update_fields) do
+        local _continue_0 = false
+        repeat
+          if v == self.__class.db.NULL then
+            _continue_0 = true
+            break
+          end
+          if self.__class.db.is_raw(v) then
+            returning = returning or { }
+            table.insert(returning, k)
+          end
+          _continue_0 = true
+        until true
+        if not _continue_0 then
+          break
         end
       end
       local res
       if returning then
-        res = self.__class.db.update(self.__class:table_name(), values, cond, unpack(returning))
-        do
-          local update = unpack(res)
-          if update then
-            for _index_0 = 1, #returning do
-              local k = returning[_index_0]
-              self[k] = update[k]
+        res = self.__class.db.update(self.__class:table_name(), update_fields, cond, unpack(returning))
+      else
+        res = self.__class.db.update(self.__class:table_name(), update_fields, cond)
+      end
+      local did_update = (res.affected_rows or 0) > 0
+      if did_update then
+        for k, v in pairs(update_fields) do
+          if v == self.__class.db.NULL then
+            self[k] = nil
+          else
+            self[k] = v
+          end
+        end
+        if returning then
+          do
+            local result_row = unpack(res)
+            if result_row then
+              if return_all then
+                for k, v in pairs(result_row) do
+                  self[k] = v
+                end
+              end
+              for _index_0 = 1, #returning do
+                local _continue_0 = false
+                repeat
+                  local k = returning[_index_0]
+                  if not (type(k) == "string") then
+                    _continue_0 = true
+                    break
+                  end
+                  self[k] = result_row[k]
+                  _continue_0 = true
+                until true
+                if not _continue_0 then
+                  break
+                end
+              end
             end
           end
         end
-      else
-        res = self.__class.db.update(self.__class:table_name(), values, cond)
       end
-      return (res.affected_rows or 0) > 0, res
+      return did_update, res
     end,
     refresh = function(self, fields, ...)
       if fields == nil then
@@ -634,69 +720,95 @@ do
         dest_key = dest_key[1]
         composite_foreign_key = false
       else
+        do
+          local _accum_0 = { }
+          local _len_0 = 1
+          for _index_0 = 1, #source_key do
+            local k = source_key[_index_0]
+            if type(k) == "function" then
+              _accum_0[_len_0] = _memoize1(k)
+            else
+              _accum_0[_len_0] = k
+            end
+            _len_0 = _len_0 + 1
+          end
+          source_key = _accum_0
+        end
         composite_foreign_key = true
       end
     else
       composite_foreign_key = false
     end
-    local include_ids
-    do
-      local _accum_0 = { }
-      local _len_0 = 1
-      for _index_0 = 1, #other_records do
-        local _continue_0 = false
-        repeat
-          local record = other_records[_index_0]
-          if skip_included then
-            if for_relation then
-              if relation_is_loaded(record, for_relation) then
-                _continue_0 = true
-                break
-              end
-            else
-              if record[field_name] ~= nil then
-                _continue_0 = true
-                break
-              end
-            end
-          end
-          local _value_0
-          if composite_foreign_key then
-            local tuple
-            do
-              local _accum_1 = { }
-              local _len_1 = 1
-              for _index_1 = 1, #source_key do
-                local k = source_key[_index_1]
-                _accum_1[_len_1] = record[k] or self.db.NULL
-                _len_1 = _len_1 + 1
-              end
-              tuple = _accum_1
-            end
-            if _all_same(tuple, self.db.NULL) then
+    local computed_source_key
+    if type(source_key) == "function" then
+      source_key = _memoize1(source_key)
+      computed_source_key = true
+    end
+    local include_ids = { }
+    for _index_0 = 1, #other_records do
+      local _continue_0 = false
+      repeat
+        local record = other_records[_index_0]
+        if skip_included then
+          if for_relation then
+            if relation_is_loaded(record, for_relation) then
               _continue_0 = true
               break
             end
-            _value_0 = self.db.list(tuple)
           else
-            do
-              local id = record[source_key]
-              if not (id) then
-                _continue_0 = true
-                break
-              end
-              _value_0 = id
+            if record[field_name] ~= nil then
+              _continue_0 = true
+              break
             end
           end
-          _accum_0[_len_0] = _value_0
-          _len_0 = _len_0 + 1
-          _continue_0 = true
-        until true
-        if not _continue_0 then
-          break
         end
+        if composite_foreign_key then
+          local tuple
+          do
+            local _accum_0 = { }
+            local _len_0 = 1
+            for _index_1 = 1, #source_key do
+              local k = source_key[_index_1]
+              if type(k) == "function" then
+                _accum_0[_len_0] = k(record) or self.db.NULL
+              else
+                _accum_0[_len_0] = record[k] or self.db.NULL
+              end
+              _len_0 = _len_0 + 1
+            end
+            tuple = _accum_0
+          end
+          if _all_same(tuple, self.db.NULL) then
+            _continue_0 = true
+            break
+          end
+          table.insert(include_ids, self.db.list(tuple))
+        else
+          local id
+          if computed_source_key then
+            id = source_key(record)
+          else
+            id = record[source_key]
+          end
+          if not (id) then
+            _continue_0 = true
+            break
+          end
+          if self.db.is_list(id) then
+            local _list_0 = id[1]
+            for _index_1 = 1, #_list_0 do
+              local item = _list_0[_index_1]
+              table.insert(include_ids, item)
+            end
+          else
+            table.insert(include_ids, id)
+          end
+        end
+        _continue_0 = true
+      until true
+      if not _continue_0 then
+        break
       end
-      include_ids = _accum_0
     end
     if next(include_ids) then
       if composite_foreign_key then
@@ -800,7 +912,73 @@ do
           else
             for _index_0 = 1, #other_records do
               local other = other_records[_index_0]
-              other[field_name] = records[other[source_key]]
+              local ref_value
+              if computed_source_key then
+                ref_value = source_key(other)
+              else
+                ref_value = other[source_key]
+              end
+              if self.db.is_list(ref_value) then
+                local list_value_set
+                do
+                  local _tbl_0 = { }
+                  local _list_0 = ref_value[1]
+                  for _index_1 = 1, #_list_0 do
+                    local k = _list_0[_index_1]
+                    if k ~= nil then
+                      _tbl_0[k] = true
+                    end
+                  end
+                  list_value_set = _tbl_0
+                end
+                if many then
+                  local matched_results
+                  do
+                    local _accum_0 = { }
+                    local _len_0 = 1
+                    for _index_1 = 1, #res do
+                      local _continue_0 = false
+                      repeat
+                        local row = res[_index_1]
+                        if not (list_value_set[row[dest_key]]) then
+                          _continue_0 = true
+                          break
+                        end
+                        local _value_0 = row
+                        _accum_0[_len_0] = _value_0
+                        _len_0 = _len_0 + 1
+                        _continue_0 = true
+                      until true
+                      if not _continue_0 then
+                        break
+                      end
+                    end
+                    matched_results = _accum_0
+                  end
+                  other[field_name] = matched_results
+                else
+                  for _index_1 = 1, #res do
+                    local _continue_0 = false
+                    repeat
+                      do
+                        local row = res[_index_1]
+                        if not (list_value_set[row[dest_key]]) then
+                          _continue_0 = true
+                          break
+                        end
+                        other[field_name] = row
+                        break
+                      end
+                      _continue_0 = true
+                    until true
+                    if not _continue_0 then
+                      break
+                    end
+                  end
+                end
+              else
+                other[field_name] = records[ref_value]
+              end
               if many and not other[field_name] then
                 other[field_name] = { }
               end

@@ -467,16 +467,24 @@ describe "lapis.db.model", ->
 
     thing = Things\load { id: 12 }
 
-    -- no query is mocked
+    -- no query is mocked, update is considered not applied
     assert.same {
       false, {}
     }, {
       thing\update color: "green", height: 100
     }
 
-    assert.same { height: 100, color: "green", id: 12 }, thing
+    assert.same { id: 12 }, thing -- no change to model instance due to failed update
 
     mock_query ".", { affected_rows: 1 }
+
+    -- query completes now, update is applied
+    assert.same {
+      true, {affected_rows: 1}
+    }, {
+      thing\update color: "green", height: 100
+    }
+    assert.same { height: 100, color: "green", id: 12 }, thing
 
     thing2 = Things\load { age: 2000, sprit: true }
     assert.same {
@@ -507,11 +515,83 @@ describe "lapis.db.model", ->
 
     assert_queries {
       [[UPDATE "things" SET "color" = 'green', "height" = 100 WHERE "id" = 12]]
+      [[UPDATE "things" SET "color" = 'green', "height" = 100 WHERE "id" = 12]]
 
       [[UPDATE "things" SET "age" = 2000 WHERE "id" IS NULL]]
       [[UPDATE "timed_things" SET "great" = TRUE, "updated_at" = '2013-08-13 06:56:40' WHERE "a" = 2 AND "b" = 3]]
       [[UPDATE "timed_things" SET "hello" = 'world' WHERE "a" = 2 AND "b" = 3]]
       [[UPDATE "timed_things" SET "cat" = 'dog' WHERE "a" = 2 AND "b" = 3]]
+    }
+
+  it "updates with db.null and db.raw", ->
+    mock_query ".", { affected_rows: 1, {
+      banned: false
+    }}
+
+    class Whoa extends Model
+
+    thing = Whoa\load { id: 92, color: "blue", banned: true }
+
+    assert.same {
+      true, {
+        affected_rows: 1
+        { banned: false }
+      }
+    }, {
+      thing\update {
+        color: db.NULL
+        banned: db.raw "created_at < now()"
+      }
+    }
+
+    assert_queries {
+      [[UPDATE "whoa" SET "banned" = created_at < now(), "color" = NULL WHERE "id" = 92 RETURNING "banned"]]
+    }
+
+    assert.same {
+      id: 92
+      banned: false
+    }, thing
+
+  it "updates with returning", ->
+    class Returnster extends Model
+
+    mock_query ".", { affected_rows: 1, {
+      height: 4000
+      ignore: "me"
+    }}
+
+    r = Returnster\load { id: 17 }
+
+    assert.true (r\update {
+      color: "blue"
+    }, returning: {"height"})
+
+    assert.same {
+      id: 17
+      height: 4000
+      color: "blue"
+    }, r
+
+    r2 = Returnster\load { id: 18, zoot: "100", zat: "200" }
+    r2\update {
+      one: "two"
+      height: 300
+      zoot: db.NULL
+      zat: db.raw "NULL"
+    }, returning: "*"
+
+    assert.same {
+      id: 18
+      one: "two"
+      height: 4000
+      ignore: "me"
+    }, r2
+
+
+    assert_queries {
+      [[UPDATE "returnster" SET "color" = 'blue' WHERE "id" = 17 RETURNING "height"]]
+      [[UPDATE "returnster" SET "height" = 300, "one" = 'two', "zat" = NULL, "zoot" = NULL WHERE "id" = 18 RETURNING *, "zat"]]
     }
 
   it "updates model with conditional", ->
@@ -547,10 +627,14 @@ describe "lapis.db.model", ->
       update_id: db.NULL
     }
 
+    -- updated_at set because timestamp: true
+    assert type(thing2.updated_at) == "string"
+
     assert.same {
       a: 2
       b: 4
       actor: "good"
+      updated_at: thing2.updated_at
     }, thing2
 
     thing2\update {
@@ -603,6 +687,26 @@ describe "lapis.db.model", ->
       [[UPDATE "timed_things" SET "updated_at" = '2013-08-13 06:56:40', "yes" = 'no' WHERE "a" = 2 AND "b" = 4 AND ("deleted" OR "status" = 'deleted')]]
       [[UPDATE "things" SET "count" = count + 1 WHERE "id" = 12 AND ("count" = 0) RETURNING "count"]]
       [[UPDATE "timed_things" SET "color" = 'green' WHERE "a" = 2 AND "b" IS NULL AND ("age" = '10')]]
+    }
+
+  it "updates model with conditional doesn't store on no update", ->
+    mock_query ".", { affected_rows: 0 }
+
+    class Things extends Model
+    thing = Things\load { id: 12 }
+
+    assert.same {
+      false, { affected_rows: 0 }
+    }, {
+      thing\update { color: "green", height: 100}, where: { color: "blue"}
+    }
+
+    assert.same {
+      id: 12
+    }, thing
+
+    assert_queries {
+      [[UPDATE "things" SET "color" = 'green', "height" = 100 WHERE "id" = 12 AND ("color" = 'blue')]]
     }
 
   it "deletes model", ->
@@ -858,6 +962,92 @@ describe "lapis.db.model", ->
 
       assert.same {}, things[2].thing_items
 
+    it "fetches by singular computed key", ->
+      mock_query "SELECT", {
+        {thing_id: "a", name: "one"}
+        {thing_id: "b", count: "two"}
+      }
+
+      things = {things[1], things[2]}
+      things[1].fake_key = "a"
+      things[2].fake_key = "b"
+
+      total_calls = 0
+
+      ThingItems\include_in things, {
+        thing_id: (thing) ->
+          total_calls += 1
+          thing.fake_key
+      }
+
+      assert_queries {
+        [[SELECT * FROM "thing_items" WHERE "thing_id" IN ('a', 'b')]]
+      }
+
+      assert.same 2, total_calls
+
+      assert.same {
+        {
+          fake_key: "a"
+          id: 1
+          other_id: 16
+          thing_id: 101
+          thing_item: {
+            name: "one"
+            thing_id: "a"
+          }
+        }
+
+        {
+          fake_key: "b"
+          id: 2
+          other_id: 18
+          thing_id: 102
+          thing_item: {
+            count: "two"
+            thing_id: "b"
+          }
+        }
+      }, things
+
+    it "singular computed key resolves to same value", ->
+      mock_query "SELECT", {
+        {thing_id: "a", name: "one"}
+        {thing_id: "b", count: "two"}
+      }
+
+      things = {things[1], things[2]}
+
+      ThingItems\include_in things, {
+        thing_id: (thing) -> "a"
+      }
+
+      assert_queries {
+        [[SELECT * FROM "thing_items" WHERE "thing_id" IN ('a')]]
+      }
+
+      assert.same {
+        {
+          id: 1
+          other_id: 16
+          thing_id: 101
+          thing_item: {
+            name: "one"
+            thing_id: "a"
+          }
+        }
+
+        {
+          id: 2
+          other_id: 18
+          thing_id: 102
+          thing_item: {
+            name: "one"
+            thing_id: "a"
+          }
+        }
+      }, things
+
   describe "include_in with composite keys", ->
     local Things, ThingItems, things
 
@@ -1021,6 +1211,301 @@ describe "lapis.db.model", ->
       }, things[4].thing_items
       assert.same {}, things[5].thing_items
 
+    it "computed composite keys", ->
+      thing_items = {
+        { id: 1, aid: 101, bid: 202 }
+        { id: 2, aid: 101, bid: 203 }
+        { id: 3, aid: 102, bid: 204 }
+        { id: 4, aid: 100, bid: 201 }
+      }
+
+      mock_query "SELECT", thing_items
+
+      called_count_a = 0
+      called_count_b = 0
+
+      ThingItems\include_in things, {
+        aid: (t) ->
+          called_count_a += 1
+          t.alpha_id
+
+        bid: (t) ->
+          called_count_b += 1
+          t.beta_id
+      }
+
+      assert.same 5, called_count_a
+      assert.same 5, called_count_b
+
+      assert_queries {
+        {
+          [[SELECT * FROM "thing_items" WHERE ("aid", "bid") IN ((100, 201), (101, 202), (101, 203), (102, 204), (102, 205))]]
+          [[SELECT * FROM "thing_items" WHERE ("bid", "aid") IN ((201, 100), (202, 101), (203, 101), (204, 102), (205, 102))]]
+        }
+      }
+
+      assert.same thing_items[4], things[1].thing_item
+      assert.same thing_items[1], things[2].thing_item
+      assert.same thing_items[2], things[3].thing_item
+      assert.same thing_items[3], things[4].thing_item
+      assert.same nil, things[5].thing_item
+
+  describe "include_in with list keys", ->
+    local Things, Items
+
+    before_each ->
+      class Things extends Model
+      class Items extends Model
+
+    it "with basic list keys", ->
+      things = {
+        Things\load { id: 1, item_ids: db.list {10, 20, 30} }
+        Things\load { id: 2, item_ids: db.list {20, 40} }
+        Things\load { id: 3, item_ids: db.list {50} }
+      }
+
+      mock_query "SELECT", {
+        { id: 10, name: "Item 10" }
+        { id: 20, name: "Item 20" }
+        { id: 30, name: "Item 30" }
+        { id: 40, name: "Item 40" }
+        { id: 50, name: "Item 50" }
+      }
+
+      Items\include_in things, "item_ids", many: true, as: "items"
+
+      assert_queries {
+        [[SELECT * FROM "items" WHERE "id" IN (10, 20, 30, 40, 50)]]
+      }
+
+      -- Check first thing has items 10, 20, 30
+      assert.same {
+        { id: 10, name: "Item 10" }
+        { id: 20, name: "Item 20" }
+        { id: 30, name: "Item 30" }
+      }, things[1].items
+
+      -- Check second thing has items 20, 40
+      assert.same {
+        { id: 20, name: "Item 20" }
+        { id: 40, name: "Item 40" }
+      }, things[2].items
+
+      -- Check third thing has item 50
+      assert.same {
+        { id: 50, name: "Item 50" }
+      }, things[3].items
+
+    it "with empty list", ->
+      things = {
+        Things\load { id: 1, item_ids: db.list {} }
+        Things\load { id: 2, item_ids: db.list {10} }
+      }
+
+      mock_query "SELECT", {
+        { id: 10, name: "Item 10" }
+      }
+
+      Items\include_in things, "item_ids", many: true, as: "items"
+
+      assert_queries {
+        [[SELECT * FROM "items" WHERE "id" IN (10)]]
+      }
+
+      -- Empty list should get empty array
+      assert.same {}, things[1].items
+      -- Second should have one item
+      assert.same {
+        { id: 10, name: "Item 10" }
+      }, things[2].items
+
+    it "with overlapping IDs between records", ->
+      things = {
+        Things\load { id: 1, item_ids: db.list {10, 20} }
+        Things\load { id: 2, item_ids: db.list {20, 30} }
+        Things\load { id: 3, item_ids: db.list {10, 30} }
+      }
+
+      mock_query "SELECT", {
+        { id: 10, name: "Item 10" }
+        { id: 20, name: "Item 20" }
+        { id: 30, name: "Item 30" }
+      }
+
+      Items\include_in things, "item_ids", many: true, as: "items"
+
+      -- Should deduplicate and only query once for each unique ID
+      assert_queries {
+        [[SELECT * FROM "items" WHERE "id" IN (10, 20, 30)]]
+      }
+
+      -- All things should have their respective items
+      assert.same {
+        { id: 10, name: "Item 10" }
+        { id: 20, name: "Item 20" }
+      }, things[1].items
+      assert.same {
+        { id: 20, name: "Item 20" }
+        { id: 30, name: "Item 30" }
+      }, things[2].items
+      assert.same {
+        { id: 10, name: "Item 10" }
+        { id: 30, name: "Item 30" }
+      }, things[3].items
+
+    -- NOTE: nil in db.list is undefined behavior but we should at least avoid crashing
+    it "with list containing nil values", ->
+      things = {
+        Things\load { id: 1, item_ids: db.list {10, nil, 20, nil, 30} }
+      }
+
+      mock_query "SELECT", {
+        { id: 10, name: "Item 10" }
+        { id: 20, name: "Item 20" }
+        { id: 30, name: "Item 30" }
+      }
+
+      Items\include_in things, "item_ids", many: true, as: "items"
+
+      -- ipairs behavior with nil values varies between Lua implementations
+      if jit
+        assert.truthy things[1].items
+      else
+        assert_queries {
+          [[SELECT * FROM "items" WHERE "id" IN (10, 20, 30)]]
+        }
+
+        assert.same {
+          { id: 10, name: "Item 10" }
+          { id: 20, name: "Item 20" }
+          { id: 30, name: "Item 30" }
+        }, things[1].items
+
+    it "with mixed list and single values", ->
+      things = {
+        Things\load { id: 1, item_ids: db.list {10, 20} }
+        Things\load { id: 2, item_ids: 30 }  -- Single value
+        Things\load { id: 3, item_ids: db.list {40} }
+      }
+
+      mock_query "SELECT", {
+        { id: 10, name: "Item 10" }
+        { id: 20, name: "Item 20" }
+        { id: 30, name: "Item 30" }
+        { id: 40, name: "Item 40" }
+      }
+
+      Items\include_in things, "item_ids", many: true, as: "items"
+
+      assert_queries {
+        [[SELECT * FROM "items" WHERE "id" IN (10, 20, 30, 40)]]
+      }
+
+      assert.same {
+        { id: 10, name: "Item 10" }
+        { id: 20, name: "Item 20" }
+      }, things[1].items
+
+      assert.same {
+        { id: 30, name: "Item 30" }
+      }, things[2].items
+
+      assert.same {
+        { id: 40, name: "Item 40" }
+      }, things[3].items
+
+    it "with where clause", ->
+      things = {
+        Things\load { id: 1, item_ids: db.list {10, 20, 30} }
+      }
+
+      mock_query "SELECT", {
+        { id: 10, name: "Item 10", active: true }
+        { id: 30, name: "Item 30", active: true }
+      }
+
+      Items\include_in things, "item_ids", many: true, as: "items", where: { active: true }
+
+      assert_queries {
+        [[SELECT * FROM "items" WHERE "id" IN (10, 20, 30) AND "active"]]
+      }
+
+      -- Should only get items that match where clause
+      assert.same {
+        { id: 10, name: "Item 10", active: true }
+        { id: 30, name: "Item 30", active: true }
+      }, things[1].items
+
+    it "with fields option", ->
+      things = {
+        Things\load { id: 1, item_ids: db.list {10, 20} }
+      }
+
+      mock_query "SELECT", {
+        { id: 10, name: "Item 10" }
+        { id: 20, name: "Item 20" }
+      }
+
+      Items\include_in things, "item_ids", many: true, as: "items", fields: "id, name"
+
+      assert_queries {
+        [[SELECT id, name FROM "items" WHERE "id" IN (10, 20)]]
+      }
+
+    it "with order option", ->
+      things = {
+        Things\load { id: 1, item_ids: db.list {10, 20} }
+      }
+
+      Items\include_in things, "item_ids", many: true, as: "items", order: "name desc"
+
+      assert_queries {
+        [[SELECT * FROM "items" WHERE "id" IN (10, 20) ORDER BY name desc]]
+      }
+
+    it "takes first item when not using many", ->
+      things = {
+        Things\load { id: 1, item_ids: db.list {10, 20} }
+      }
+
+      mock_query "SELECT", {
+        { id: 30, name: "Item 30" }
+        { id: 10, name: "Item 10" }
+        { id: 20, name: "Item 20" }
+      }
+
+      Items\include_in things, "item_ids", as: "first_item"
+
+      assert_queries {
+        [[SELECT * FROM "items" WHERE "id" IN (10, 20)]]
+      }
+
+      assert.same {
+       id: 10, name: "Item 10"
+      }, things[1].first_item
+
+    it "with some IDs not found", ->
+      things = {
+        Things\load { id: 1, item_ids: db.list {10, 20, 999} }
+        Things\load { id: 1, item_ids: db.list {344} }
+      }
+
+      mock_query "SELECT", {
+        { id: 10, name: "Item 10" }
+        { id: 20, name: "Item 20" }
+        -- ID 999, 344 not in results
+      }
+
+      Items\include_in things, "item_ids", many: true, as: "items"
+
+      -- Should only include found items
+      assert.same {
+        { id: 10, name: "Item 10" }
+        { id: 20, name: "Item 20" }
+      }, things[1].items
+
+      assert.same {
+      }, things[2].items
 
   describe "constraints", ->
     it "should prevent update/insert for failed constraint", ->
@@ -1047,20 +1532,37 @@ describe "lapis.db.model", ->
 
       assert.same { nil, "missing `name`"}, { Things\create! }
 
-    it "should allow to update values on create and on update", ->
+    -- NOTE: Previously, there was undocumented support to modify the object
+    -- argument of the constraint in order to influence the update query. As of
+    -- version 1.16, this feature is no longer supported for the update method.
+    it "DEPRECATED: update values in constraint is undefined", ->
       mock_query "INSERT", { { id: 101 } }
+      mock_query "UPDATE", { affected_rows: 1 }
 
       class Things extends Model
         @constraints: {
-          name: (val, column, values) => values.name = 'changed from ' .. val
+          name: (val, column, values) =>
+            values.name = 'changed from ' .. val
+            nil
         }
 
       thing = Things\create name: 'create'
+
+      assert.same {
+        id: 101
+        name: "changed from create"
+      }, thing
+
       thing\update name: 'update'
+
+      assert.same {
+        id: 101
+        name: "update"
+      }, thing
 
       assert_queries {
         [[INSERT INTO "things" ("name") VALUES ('changed from create') RETURNING "id"]]
-        [[UPDATE "things" SET "name" = 'changed from update' WHERE "id" = 101]]
+        [[UPDATE "things" SET "name" = 'update' WHERE "id" = 101]]
       }
 
   describe "inheritance", ->

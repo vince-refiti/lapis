@@ -153,6 +153,7 @@ build_response = ->
     headers: ngx.header
   }
 
+-- process a request with an app. The current request is stored in the global ngx object
 dispatch = (app) ->
   res = build_response!
   app\dispatch res.req, res
@@ -162,6 +163,19 @@ dispatch = (app) ->
   run_after_dispatch!
   res
 
-{ :build_request, :build_response, :dispatch }
+-- wraps ngx.timer.at to ensure that after dispatch is called
+timer_at = (delay, fn, ...) ->
+  callback = (_premature, fn, ...) ->
+    success, err = pcall fn, _premature, ...
+    run_after_dispatch!
+
+    if not success
+      error err
+
+    return
+
+  ngx.timer.at delay, callback, fn, ...
+
+{ :build_request, :build_response, :dispatch, :timer_at }
 
 
