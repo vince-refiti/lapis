@@ -1,5 +1,5 @@
 
-import parse_flags from require "lapis.cmd.util"
+import parse_flags, package_searchpath from require "lapis.cmd.util"
 
 colors = require "ansicolors"
 
@@ -26,7 +26,7 @@ add_environment_argument = (command, summary) ->
 -- action, eg for lapis-annotate and lapis-systemd
 custom_action = (t) ->
   t.test_available = ->
-    pcall -> require "lapis.cmd.actions.#{t.name}"
+    package_searchpath "lapis.cmd.actions.#{t.name}", package.path
 
   t.argparse = (command) ->
     with command
@@ -463,6 +463,11 @@ COMMANDS = {
     help: "Lapis MCP server runtime"
   }
 
+  custom_action {
+    name: "exceptions"
+    help: "Manage tracked exceptions"
+  }
+
   {
     name: "debug"
     hidden: true
@@ -610,6 +615,27 @@ class CommandRunner
     if next(args) == nil
       args = { @default_action }
 
+    ok, result = parser\pparse args
+
+    if ok
+      return result
+
+    -- try to load unknown command as a third-party action module
+    cmd_name = result\match "unknown command '(.-)'"
+    if cmd_name
+      mod_name = "lapis.cmd.actions.#{cmd_name}"
+      if package_searchpath mod_name, package.path
+        spec = custom_action {name: cmd_name}
+        table.insert COMMANDS, spec
+
+        command = parser\command cmd_name
+        command\handle_options false
+        command\argument("sub_command_args", "Arguments to command")\argname("<args>")\args("*")
+        return parser\parse args
+      else
+        io.stderr\write "Note: tried to load command from module '#{mod_name}'\n"
+
+    -- re-run parse to trigger the original error message
     parser\parse args
 
   execute: (args) =>

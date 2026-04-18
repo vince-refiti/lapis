@@ -25,6 +25,10 @@
 --     resolver 8.8.8.8;
 --     proxy_http_version 1.1;
 --     proxy_pass $_url;
+--
+--     # Enable SSL certificate verification
+--     proxy_ssl_verify on;
+--     proxy_ssl_trusted_certificate /etc/ssl/certs/ca-certificates.crt;
 -- }
 --
 --
@@ -89,6 +93,15 @@ simple = (req, body) ->
   res.body, res.status, res.header
 
 request = (url, str_body) ->
+  -- handle phases not compatible with location.capture
+  -- NOTE: while we are testing resty_http integration we are only exposing in
+  -- timers. You will need to manually opt into lapis.nginx.resty_http to use
+  -- it in other phases for now, as you may want the existing behavior of an
+  -- error to be raised if you're doing http requests in weird places
+  switch ngx.get_phase!
+    when "timer"
+      return require("lapis.nginx.resty_http").request url, str_body
+
   ltn12 = require "ltn12"
 
   config = lapis_config.get!
